@@ -128,6 +128,29 @@ class CutPlanTest {
         }
 
         @Test
+        void cutsFromTheTightestRunSoTheLongRunStaysWhole() {
+            List<Span> uneven = List.of(new Span(0, 50, 50), new Span(51, 63, 12));
+            CutPlan.Plan plan = CutPlan.planCuts(uneven, List.of(10));
+            assertThat(plan.cuts()).containsExactly(new Span(51, 61, 10));
+            assertThat(plan.offcuts()).containsExactly(new Span(0, 50, 50), new Span(61, 63, 2));
+        }
+
+        @Test
+        void takesTheEarlierRunWhenTwoAreEquallyTight() {
+            CutPlan.Plan plan = CutPlan.planCuts(runs, List.of(20));
+            assertThat(plan.cuts()).containsExactly(new Span(0, 20, 20));
+        }
+
+        @Test
+        void packsARunThatExactlyHoldsALengthBeforeALongerOne() {
+            List<Span> uneven = List.of(new Span(0, 50, 50), new Span(60, 90, 30));
+            CutPlan.Plan plan = CutPlan.planCuts(uneven, List.of(30, 20, 20, 10));
+            assertThat(plan.cuts()).extracting(Span::from).containsExactly(0.0, 20.0, 40.0, 60.0);
+            assertThat(plan.unmet()).isEmpty();
+            assertThat(plan.offcuts()).isEmpty();
+        }
+
+        @Test
         void refusesAWantedLengthOfNothing() {
             assertThatThrownBy(() -> CutPlan.planCuts(runs, List.of(0))).isInstanceOf(InvalidArgumentException.class);
         }
@@ -226,6 +249,43 @@ class CutPlanTest {
             assertThat(job.cuts()).extracting(Span::from).containsExactly(50.25);
             assertThat(job.unmet()).containsExactly(25.0);
             assertThat(job.summary().wasteYards()).isEqualTo(30.5);
+        }
+    }
+
+    @Nested
+    class SortOffcuts {
+
+        @Test
+        void sortsWhatIsLeftIntoShortLengthsFentsAndRags() {
+            List<Span> runs = List.of(new Span(0, 52, 52), new Span(53, 68, 15), new Span(69, 75.5, 6.5));
+            CutPlan.Plan plan = CutPlan.planCuts(runs, List.of(40, 6));
+            CutPlan.Offcuts sorted = CutPlan.sortOffcuts(plan);
+            assertThat(sorted.shortLengths()).containsExactly(new Span(40, 52, 12), new Span(53, 68, 15));
+            assertThat(sorted.fents()).isEmpty();
+            assertThat(sorted.rags()).containsExactly(new Span(75, 75.5, 0.5));
+        }
+
+        @Test
+        void putsTheBoundariesInTheBetterClass() {
+            CutPlan.Plan plan = CutPlan.planCuts(
+                    List.of(new Span(0, CutPlan.SHORT_LENGTH_YARDS, CutPlan.SHORT_LENGTH_YARDS), new Span(20, 21, 1)),
+                    List.of());
+            CutPlan.Offcuts sorted = CutPlan.sortOffcuts(plan);
+            assertThat(sorted.shortLengths()).hasSize(1);
+            assertThat(sorted.fents()).containsExactly(new Span(20, 21, CutPlan.FENT_YARDS));
+            assertThat(sorted.rags()).isEmpty();
+        }
+
+        @Test
+        void comesWithTheWholeJob() {
+            CutPlan.Job job = CutPlan.cutRoll(100, List.of(50), List.of(45, 45));
+            assertThat(job.sorted().fents()).extracting(Span::yards).containsExactly(4.75, 4.75);
+            assertThat(job.sorted().shortLengths()).isEmpty();
+            assertThat(CutPlan.cutRoll(
+                                    Json.obj("rollYards", 100, "defectYards", List.of(), "wantedLengths", List.of(70)))
+                            .sorted()
+                            .shortLengths())
+                    .containsExactly(new Span(70, 100, 30));
         }
     }
 }

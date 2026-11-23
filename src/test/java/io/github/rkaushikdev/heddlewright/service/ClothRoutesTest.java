@@ -221,6 +221,13 @@ class ClothRoutesTest {
         }
 
         @Test
+        void sortsTheOffcutsForTheWarehouse() {
+            Json job =
+                    post("/pieces/P1001/cut", Json.obj("lengths", List.of(95))).body();
+            assertThat(job.get("sorted").get("fents").at(0).get("yards")).isEqualTo(Json.of(5));
+        }
+
+        @Test
         void cutsTheWholePieceWhenNothingIsWrongWithIt() {
             Json job =
                     post("/pieces/P1001/cut", Json.obj("lengths", List.of(100))).body();

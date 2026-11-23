@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Cutting a roll around its faults.
@@ -21,11 +22,22 @@ import java.util.Map;
  * <p>A fault is a point on the roll, or for a fault that runs down the piece a stretch from the
  * {@code yard} it starts at to the yard it runs {@code through}. The margin is kept either side of the
  * whole stretch, since a cut anywhere inside a reed mark still lands on the reed mark.
+ *
+ * <p>Each wanted length is cut from the tightest run that still holds it, so the long runs stay
+ * whole for as long as possible and what is left over comes off as a sellable short length rather
+ * than a handful of fents. Offcuts are sorted the way the warehouse sorts them: short lengths of ten
+ * yards or more, fents down to a yard, and rags below that.
  */
 public final class CutPlan {
 
     /** The usual margin either side of a fault, in yards. */
     public static final double CLEARANCE = 0.25;
+
+    /** The shortest offcut still sold by the yard as a short length. */
+    public static final double SHORT_LENGTH_YARDS = 10;
+
+    /** The shortest offcut still sold as a fent; anything shorter is a rag. */
+    public static final double FENT_YARDS = 1;
 
     /** A stretch of a roll: where it starts and ends, and how long it is. */
     public record Span(double from, double to, double yards) {}
@@ -40,12 +52,23 @@ public final class CutPlan {
         }
     }
 
+    /** The offcuts sorted for the warehouse, each list in roll order. */
+    public record Offcuts(List<Span> shortLengths, List<Span> fents, List<Span> rags) {
+        /** Copies the lists. */
+        public Offcuts {
+            shortLengths = List.copyOf(shortLengths);
+            fents = List.copyOf(fents);
+            rags = List.copyOf(rags);
+        }
+    }
+
     /** What a plan yields against its roll. */
     public record Summary(
             double rollYards, double cutYards, double offcutYards, double wasteYards, double yield, int unmet) {}
 
-    /** The whole job: the clear runs, the plan, and its summary. */
-    public record Job(List<Span> runs, List<Span> cuts, List<Double> unmet, List<Span> offcuts, Summary summary) {
+    /** The whole job: the clear runs, the plan, its summary, and its offcuts sorted. */
+    public record Job(
+            List<Span> runs, List<Span> cuts, List<Double> unmet, List<Span> offcuts, Summary summary, Offcuts sorted) {
         /** Copies the lists. */
         public Job {
             runs = List.copyOf(runs);
@@ -130,47 +153,50 @@ public final class CutPlan {
     }
 
     /**
-     * Fit wanted lengths into the clear runs, longest first, taking each length out of the first run
-     * that still holds it.
+     * Fit wanted lengths into the clear runs, longest first, cutting each from the run with the least
+     * left that still holds it, the earlier run on a tie.
      */
     public static Plan planCuts(List<Span> runs, List<?> wantedLengths) {
         Check.array(runs, "runs");
-        List<Object> lengths = Check.array(wantedLengths, "wantedLengths");
-        double[] left = new double[runs.size()];
-        for (int i = 0; i < runs.size(); i += 1) {
-            left[i] = runs.get(i).yards();
-        }
-        List<Double> wanted = new ArrayList<>(lengths.size());
-        for (Object length : lengths) {
-            wanted.add(Check.positiveNumber(length, "wanted length"));
-        }
+        List<Double> wanted = new ArrayList<>(Check.array(wantedLengths, "wantedLengths").stream()
+                .map(length -> Check.positiveNumber(length, "wanted length"))
+                .toList());
         wanted.sort(Comparator.reverseOrder());
+        List<Open> left =
+                runs.stream().map(run -> new Open(run.from(), run.to())).toList();
         List<Span> cuts = new ArrayList<>();
         List<Double> unmet = new ArrayList<>();
         for (double length : wanted) {
-            int found = -1;
-            for (int i = 0; i < runs.size() && found < 0; i += 1) {
-                if (left[i] >= length) {
-                    found = i;
-                }
-            }
-            if (found < 0) {
+            Optional<Open> tightest = left.stream()
+                    .filter(run -> Numeric.roundTo(run.to - run.from, 3) >= length)
+                    .min(Comparator.comparingDouble((Open run) -> run.to - run.from));
+            if (tightest.isEmpty()) {
                 unmet.add(length);
                 continue;
             }
-            double from = Numeric.roundTo(runs.get(found).to() - left[found], 3);
-            cuts.add(new Span(from, Numeric.roundTo(from + length, 3), length));
-            left[found] = Numeric.roundTo(left[found] - length, 3);
+            Open run = tightest.get();
+            cuts.add(new Span(Numeric.roundTo(run.from, 3), Numeric.roundTo(run.from + length, 3), length));
+            run.from = Numeric.roundTo(run.from + length, 3);
         }
         cuts.sort(Comparator.comparingDouble(Span::from));
-        List<Span> offcuts = new ArrayList<>();
-        for (int i = 0; i < runs.size(); i += 1) {
-            if (left[i] > 0) {
-                Span run = runs.get(i);
-                offcuts.add(new Span(Numeric.roundTo(run.to() - left[i], 3), run.to(), left[i]));
-            }
-        }
+        List<Span> offcuts = left.stream()
+                .filter(run -> Numeric.roundTo(run.to - run.from, 3) > 0)
+                .map(run -> span(run.from, run.to))
+                .toList();
         return new Plan(cuts, unmet, offcuts);
+    }
+
+    /** The offcuts of a plan sorted into short lengths, fents and rags. */
+    public static Offcuts sortOffcuts(Plan plan) {
+        List<Span> offcuts = plan.offcuts();
+        return new Offcuts(
+                offcuts.stream()
+                        .filter(cut -> cut.yards() >= SHORT_LENGTH_YARDS)
+                        .toList(),
+                offcuts.stream()
+                        .filter(cut -> cut.yards() >= FENT_YARDS && cut.yards() < SHORT_LENGTH_YARDS)
+                        .toList(),
+                offcuts.stream().filter(cut -> cut.yards() < FENT_YARDS).toList());
     }
 
     /** What a plan actually yields, against the roll it came out of. */
@@ -217,7 +243,8 @@ public final class CutPlan {
     public static Job cutRoll(double rollYards, List<?> defectYards, List<?> wantedLengths, double clearance) {
         List<Span> runs = clearRuns(defectYards, rollYards, clearance);
         Plan plan = planCuts(runs, wantedLengths);
-        return new Job(runs, plan.cuts(), plan.unmet(), plan.offcuts(), cutPlanSummary(plan, rollYards));
+        return new Job(
+                runs, plan.cuts(), plan.unmet(), plan.offcuts(), cutPlanSummary(plan, rollYards), sortOffcuts(plan));
     }
 
     /**
@@ -240,6 +267,7 @@ public final class CutPlan {
                 plan.cuts(),
                 plan.unmet(),
                 plan.offcuts(),
-                cutPlanSummary(plan, record.get("rollYards").asDouble()));
+                cutPlanSummary(plan, record.get("rollYards").asDouble()),
+                sortOffcuts(plan));
     }
 }
