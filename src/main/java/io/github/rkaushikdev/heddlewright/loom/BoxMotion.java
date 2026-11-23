@@ -32,6 +32,11 @@ import java.util.Map;
  * a change costs part of a pick. A pattern that changes on every pick runs measurably slower than
  * one that changes every fourth, and which colour sits in which box decides how far the box
  * travels. The plan itself, which puts the two together, is {@link BoxPlan}.
+ *
+ * <p>Travel is the whole distance the box moves over a repeat, counted in box positions. A drop box
+ * skipping from box one to box four takes longer to settle and wears the motion harder than three
+ * single steps would suggest, so a pattern that alternates two minor colours wants them in boxes
+ * next to each other even when neither is the commonest.
  */
 public final class BoxMotion {
 
@@ -92,16 +97,41 @@ public final class BoxMotion {
         return out;
     }
 
+    /** The colour one entry of a pattern names, read as text whatever it was written as. */
+    private static String colourOf(Object entry) {
+        return entry instanceof Json.Str json ? json.value() : String.valueOf(entry);
+    }
+
     /** The distinct colours in a pattern, in the order they are first picked. */
     public static List<String> coloursIn(List<?> pattern) {
-        List<String> seen = new ArrayList<>();
-        for (Object entry : pattern) {
-            String colour = entry instanceof Json.Str json ? json.value() : String.valueOf(entry);
-            if (!seen.contains(colour)) {
-                seen.add(colour);
-            }
+        return pattern.stream().map(BoxMotion::colourOf).distinct().toList();
+    }
+
+    /** Each colour with its picks, commonest first and then in the order first picked. */
+    private static List<Allotment> counted(List<?> pattern, int boxes) {
+        List<String> picks = colours(pattern);
+        List<String> colours = coloursIn(picks);
+        Check.positiveInteger(boxes, "boxes");
+        if (colours.size() > boxes) {
+            throw new CapacityException(
+                    colours.size() + " wefts will not go in " + boxes + " boxes",
+                    Json.obj("colours", colours, "boxes", boxes));
         }
-        return List.copyOf(seen);
+        return colours.stream()
+                .map(colour -> new Allotment(
+                        colour, 0, (int) picks.stream().filter(colour::equals).count()))
+                .sorted(Comparator.comparingInt(Allotment::picks).reversed())
+                .toList();
+    }
+
+    /** The colours given boxes one, two, three and so on, in the order listed. */
+    private static List<Allotment> inBoxes(List<Allotment> colours) {
+        List<Allotment> out = new ArrayList<>(colours.size());
+        for (int index = 0; index < colours.size(); index += 1) {
+            out.add(new Allotment(
+                    colours.get(index).colour(), index + 1, colours.get(index).picks()));
+        }
+        return List.copyOf(out);
     }
 
     /**
@@ -113,26 +143,48 @@ public final class BoxMotion {
      * for a given pattern.
      */
     public static List<Allotment> allotBoxes(List<?> pattern, int boxes) {
-        List<String> picks = colours(pattern);
-        List<String> colours = coloursIn(picks);
-        Check.positiveInteger(boxes, "boxes");
-        if (colours.size() > boxes) {
-            throw new CapacityException(
-                    colours.size() + " wefts will not go in " + boxes + " boxes",
-                    Json.obj("colours", colours, "boxes", boxes));
+        return inBoxes(counted(pattern, boxes));
+    }
+
+    /**
+     * Allot boxes for the least travel. The commonest colour still rests in box one, and the others
+     * take boxes two upwards in whichever order moves the box least over the repeat; of equally short
+     * orders the one nearest the commonest-first order wins, so a pattern {@link #allotBoxes} already
+     * suits is allotted the same.
+     */
+    public static List<Allotment> allotForTravel(List<?> pattern, int boxes) {
+        List<Allotment> ranked = counted(pattern, boxes);
+        List<Allotment> best = inBoxes(ranked);
+        int shortest = boxTravel(boxChain(pattern, best));
+        for (List<Allotment> order : orders(ranked.subList(1, ranked.size()))) {
+            List<Allotment> trial = new ArrayList<>(List.of(ranked.get(0)));
+            trial.addAll(order);
+            List<Allotment> allotted = inBoxes(trial);
+            int travel = boxTravel(boxChain(pattern, allotted));
+            if (travel < shortest) {
+                best = allotted;
+                shortest = travel;
+            }
         }
-        List<Allotment> counted = new ArrayList<>();
-        for (String colour : colours) {
-            counted.add(new Allotment(
-                    colour, 0, (int) picks.stream().filter(colour::equals).count()));
+        return best;
+    }
+
+    /** Every order of a list, the list as given first. */
+    private static <T> List<List<T>> orders(List<T> items) {
+        if (items.size() <= 1) {
+            return List.of(List.copyOf(items));
         }
-        counted.sort(Comparator.comparingInt(Allotment::picks).reversed());
-        List<Allotment> out = new ArrayList<>(counted.size());
-        for (int index = 0; index < counted.size(); index += 1) {
-            Allotment entry = counted.get(index);
-            out.add(new Allotment(entry.colour(), index + 1, entry.picks()));
+        List<List<T>> out = new ArrayList<>();
+        for (int index = 0; index < items.size(); index += 1) {
+            List<T> rest = new ArrayList<>(items);
+            T first = rest.remove(index);
+            for (List<T> tail : orders(rest)) {
+                List<T> order = new ArrayList<>(List.of(first));
+                order.addAll(tail);
+                out.add(order);
+            }
         }
-        return List.copyOf(out);
+        return out;
     }
 
     /** The box each pick is taken from, one entry per pick. */
@@ -142,8 +194,7 @@ public final class BoxMotion {
         allotment.forEach(entry -> byColour.put(entry.colour(), entry.box()));
         List<Integer> chain = new ArrayList<>(pattern.size());
         for (int index = 0; index < pattern.size(); index += 1) {
-            Object entry = pattern.get(index);
-            String colour = entry instanceof Json.Str json ? json.value() : String.valueOf(entry);
+            String colour = colourOf(pattern.get(index));
             Integer box = byColour.get(colour);
             if (box == null) {
                 throw new InvalidArgumentException(
@@ -155,6 +206,19 @@ public final class BoxMotion {
         return List.copyOf(chain);
     }
 
+    /** How far the box moves between each pick and the next, the last back to the first when cyclic. */
+    private static List<Integer> lifts(List<Integer> chain, boolean cyclic) {
+        Check.array(chain, "chain", 1);
+        List<Integer> out = new ArrayList<>(chain.size());
+        for (int i = 1; i < chain.size(); i += 1) {
+            out.add(Math.abs(chain.get(i) - chain.get(i - 1)));
+        }
+        if (cyclic && chain.size() > 1) {
+            out.add(Math.abs(chain.get(0) - chain.get(chain.size() - 1)));
+        }
+        return out;
+    }
+
     /** How many times the box has to lift over one repeat of the chain, read as a loop. */
     public static int boxChanges(List<Integer> chain) {
         return boxChanges(chain, true);
@@ -162,17 +226,7 @@ public final class BoxMotion {
 
     /** How many times the box has to lift, read as a loop or straight through. */
     public static int boxChanges(List<Integer> chain, boolean cyclic) {
-        Check.array(chain, "chain", 1);
-        int changes = 0;
-        for (int i = 1; i < chain.size(); i += 1) {
-            if (!chain.get(i).equals(chain.get(i - 1))) {
-                changes += 1;
-            }
-        }
-        if (cyclic && chain.size() > 1 && !chain.get(0).equals(chain.get(chain.size() - 1))) {
-            changes += 1;
-        }
-        return changes;
+        return (int) lifts(chain, cyclic).stream().filter(lift -> lift > 0).count();
     }
 
     /** The furthest the box has to travel in one change, read as a loop. */
@@ -182,15 +236,12 @@ public final class BoxMotion {
 
     /** The furthest the box has to travel in one change, in box positions. */
     public static int longestLift(List<Integer> chain, boolean cyclic) {
-        Check.array(chain, "chain", 1);
-        int worst = 0;
-        for (int i = 1; i < chain.size(); i += 1) {
-            worst = Math.max(worst, Math.abs(chain.get(i) - chain.get(i - 1)));
-        }
-        if (cyclic && chain.size() > 1) {
-            worst = Math.max(worst, Math.abs(chain.get(0) - chain.get(chain.size() - 1)));
-        }
-        return worst;
+        return lifts(chain, cyclic).stream().mapToInt(Integer::intValue).max().orElse(0);
+    }
+
+    /** The box positions travelled over one repeat of the chain, read as a loop. */
+    public static int boxTravel(List<Integer> chain) {
+        return (int) Numeric.sumBy(lifts(chain, true), Integer::doubleValue, "chain");
     }
 
     /**

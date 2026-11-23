@@ -328,4 +328,59 @@ class BoxMotionTest {
                     .isInstanceOf(InvalidArgumentException.class);
         }
     }
+
+    @Nested
+    class Travel {
+
+        private final List<String> stripes = List.of(
+                "red", "red", "red", "red", "red", "red", "gold", "green", "gold", "green", "gold", "gold", "red",
+                "red", "blue", "blue", "blue", "red");
+
+        @Test
+        void addsUpEveryPositionTheBoxMovesRoundTheRepeat() {
+            assertThat(BoxMotion.boxTravel(List.of(1, 1, 3, 2))).isEqualTo(2 + 1 + 1);
+            assertThat(BoxMotion.boxTravel(List.of(2, 2, 2))).isEqualTo(0);
+            assertThat(BoxMotion.boxTravel(List.of(4))).isEqualTo(0);
+        }
+
+        @Test
+        void putsTwoColoursThatAlternateInNeighbouringBoxes() {
+            List<BoxMotion.Allotment> byCount = BoxMotion.allotBoxes(stripes, 4);
+            List<BoxMotion.Allotment> byTravel = BoxMotion.allotForTravel(stripes, 4);
+            assertThat(byCount).extracting(BoxMotion.Allotment::colour).containsExactly("red", "gold", "blue", "green");
+            assertThat(byTravel)
+                    .extracting(BoxMotion.Allotment::colour)
+                    .containsExactly("red", "blue", "gold", "green");
+            assertThat(BoxMotion.boxTravel(BoxMotion.boxChain(stripes, byCount)))
+                    .isEqualTo(14);
+            assertThat(BoxMotion.boxTravel(BoxMotion.boxChain(stripes, byTravel)))
+                    .isEqualTo(10);
+        }
+
+        @Test
+        void keepsTheCommonestColourResting() {
+            assertThat(BoxMotion.allotForTravel(stripes, 4).get(0)).isEqualTo(new BoxMotion.Allotment("red", 1, 9));
+        }
+
+        @Test
+        void leavesAPatternTheCountAlreadySuitsAsItWas() {
+            List<String> simple = List.of("ground", "ground", "ground", "blue", "blue", "gold");
+            assertThat(BoxMotion.allotForTravel(simple, 4)).isEqualTo(BoxMotion.allotBoxes(simple, 4));
+            assertThat(BoxMotion.allotForTravel(List.of("ground"), 1))
+                    .containsExactly(new BoxMotion.Allotment("ground", 1, 1));
+        }
+
+        @Test
+        void stillRefusesMoreColoursThanBoxes() {
+            assertThatThrownBy(() -> BoxMotion.allotForTravel(stripes, 3)).isInstanceOf(CapacityException.class);
+        }
+
+        @Test
+        void readsTheChangesAndTheLongestLiftOffTheSameSteps() {
+            List<Integer> chain = BoxMotion.boxChain(stripes, BoxMotion.allotForTravel(stripes, 4));
+            assertThat(BoxMotion.boxChanges(chain)).isEqualTo(8);
+            assertThat(BoxMotion.longestLift(chain)).isEqualTo(2);
+            assertThat(BoxMotion.longestLift(chain, false)).isEqualTo(2);
+        }
+    }
 }
