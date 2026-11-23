@@ -21,7 +21,10 @@ import java.util.stream.Collectors;
  * fixed mass, so a bigger number is a finer yarn: cotton counts hanks of 840 yards to the pound.
  *
  * <p>Every constant here is worked out from the pound and the yard rather than copied from a table,
- * so the familiar 590.5 for cotton falls out rather than being asserted.
+ * so the familiar 590.5 for cotton falls out rather than being asserted. A system is declared by what
+ * its unit is: so much mass on so much length for a direct count, so much length in so much mass for
+ * an indirect one. Jute is spun to pounds per spyndle of 14,400 yards, American woollen to runs of
+ * 1,600 yards and cuts of 300 yards a pound, and Galashiels woollen to cuts of 300 yards in 24 ounces.
  */
 public final class Count {
 
@@ -90,28 +93,45 @@ public final class Count {
     }
 
     private static final double GRAMS_PER_POUND = 453.59237;
+    private static final double GRAMS_PER_OUNCE = GRAMS_PER_POUND / 16;
     private static final double METRES_PER_YARD = 0.9144;
 
-    /** The eight systems a mill quotes in, by name. */
+    /** The systems a mill quotes in, by name. */
     public static final Map<String, CountSystem> COUNT_SYSTEMS = systems();
 
     private Count() {}
 
-    /** Grams per 1000 m for one unit of an indirect system of {@code hankYards} per lb. */
-    private static double indirectConstant(double hankYards) {
-        return (GRAMS_PER_POUND * 1000) / (hankYards * METRES_PER_YARD);
+    /** A direct system whose unit is {@code grams} on {@code metres}. */
+    private static Direct massOnLength(double grams, double metres, String label) {
+        return new Direct((grams * 1000) / metres, label);
+    }
+
+    /** An indirect system whose unit is {@code metres} in {@code grams}. */
+    private static Indirect lengthInMass(double metres, double grams, String label) {
+        return new Indirect((grams * 1000) / metres, label);
+    }
+
+    /** An indirect system counting hanks of {@code yards} to the pound. */
+    private static Indirect hanksPerPound(double yards, String label) {
+        return lengthInMass(yards * METRES_PER_YARD, GRAMS_PER_POUND, label);
     }
 
     private static Map<String, CountSystem> systems() {
         Map<String, CountSystem> map = new LinkedHashMap<>();
-        map.put("tex", new Direct(1, "grams per 1000 m"));
-        map.put("dtex", new Direct(0.1, "grams per 10000 m"));
-        map.put("denier", new Direct(1.0 / 9, "grams per 9000 m"));
-        map.put("nm", new Indirect(1000, "metres per gram"));
-        map.put("ne", new Indirect(indirectConstant(840), "cotton hanks per pound"));
-        map.put("new", new Indirect(indirectConstant(560), "worsted hanks per pound"));
-        map.put("nel", new Indirect(indirectConstant(300), "linen leas per pound"));
-        map.put("nw", new Indirect(indirectConstant(256), "woollen skeins per pound"));
+        map.put("tex", massOnLength(1, 1000, "grams per 1000 m"));
+        map.put("dtex", massOnLength(1, 10000, "grams per 10000 m"));
+        map.put("denier", massOnLength(1, 9000, "grams per 9000 m"));
+        map.put("nm", lengthInMass(1, 1, "metres per gram"));
+        map.put("ne", hanksPerPound(840, "cotton hanks per pound"));
+        map.put("new", hanksPerPound(560, "worsted hanks per pound"));
+        map.put("nel", hanksPerPound(300, "linen leas per pound"));
+        map.put("nw", hanksPerPound(256, "woollen skeins per pound"));
+        map.put("jute", massOnLength(GRAMS_PER_POUND, 14400 * METRES_PER_YARD, "pounds per spyndle of 14400 yards"));
+        map.put("run", hanksPerPound(1600, "american woollen runs per pound"));
+        map.put("cut", hanksPerPound(300, "american woollen cuts per pound"));
+        map.put(
+                "galashiels",
+                lengthInMass(300 * METRES_PER_YARD, 24 * GRAMS_PER_OUNCE, "galashiels cuts per 24 ounces"));
         return Collections.unmodifiableMap(map);
     }
 

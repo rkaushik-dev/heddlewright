@@ -29,9 +29,52 @@ class CountTest {
     class CountSystems {
 
         @Test
-        void carriesTheEightSystemsAMillQuotesIn() {
+        void carriesTheSystemsAMillQuotesInTheMetricAndCottonOnesFirst() {
             assertThat(Count.COUNT_SYSTEMS.keySet())
-                    .containsExactly("tex", "dtex", "denier", "nm", "ne", "new", "nel", "nw");
+                    .containsExactly(
+                            "tex",
+                            "dtex",
+                            "denier",
+                            "nm",
+                            "ne",
+                            "new",
+                            "nel",
+                            "nw",
+                            "jute",
+                            "run",
+                            "cut",
+                            "galashiels");
+        }
+
+        @Test
+        void worksTheJuteSpyndleOutToThirtyFourAndAHalfTex() {
+            assertThat(((Count.Direct) Count.COUNT_SYSTEMS.get("jute")).factor())
+                    .isCloseTo(34.45, digits(2));
+            assertThat(Count.toTex(8, "jute")).isCloseTo(275.59, digits(2));
+            assertThat(Count.isIndirect("jute")).isFalse();
+        }
+
+        @Test
+        void worksTheAmericanAndGalashielsWoollenConstantsOut() {
+            assertThat(constant("run")).isCloseTo(310.03, digits(2));
+            assertThat(constant("cut")).isCloseTo(constant("nel"), digits(6));
+            assertThat(constant("galashiels")).isCloseTo(2480.27, digits(2));
+        }
+
+        @Test
+        void convertsBetweenTheWoollenSystems() {
+            assertThat(Count.convertCount(5, "run", "nm")).isEqualTo(16.1273);
+            assertThat(Count.convertCount(24, "galashiels", "run")).isCloseTo(3, within(0.001));
+            assertThat(Count.convertCount(1, "jute", "ne")).isCloseTo(17.1429, digits(4));
+        }
+
+        @Test
+        void keepsTheDirectSystemsInStepWithTex() {
+            assertThat(((Count.Direct) Count.COUNT_SYSTEMS.get("denier")).factor())
+                    .isCloseTo(1.0 / 9, digits(9));
+            assertThat(((Count.Direct) Count.COUNT_SYSTEMS.get("dtex")).factor())
+                    .isCloseTo(0.1, digits(9));
+            assertThat(constant("nm")).isEqualTo(1000);
         }
 
         @Test
