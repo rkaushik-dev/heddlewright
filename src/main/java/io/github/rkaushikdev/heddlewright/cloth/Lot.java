@@ -12,6 +12,9 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 /**
  * Shade lots.
@@ -25,6 +28,12 @@ import java.util.Map;
  * axes alike. CMC(l:c) weights each axis by how much the eye forgives at that lightness, chroma and
  * hue, and is the figure a dyehouse passes or fails a shade on; 2:1 is the usual ratio for
  * acceptability and 1:1 for perceptibility.
+ *
+ * <p>Against a standard, CMC splits into its three parts, lightness, chroma and hue, each signed:
+ * lighter, brighter and turned anticlockwise round the hue circle read positive. The 555 shade sort
+ * gives each part a digit, five for on the standard and one step either way for every step of
+ * difference, so a piece coded 645 is a step light, on chroma and a step short on hue. Pieces with the
+ * same code are cut together, and a piece more than four steps out on any part cannot be sorted.
  */
 public final class Lot {
 
@@ -68,11 +77,25 @@ public final class Lot {
         }
     }
 
+    /** A batch against a standard, split into the signed CMC parts, each in units of its tolerance. */
+    public record CmcParts(double lightness, double chroma, double hue) {}
+
+    /** A piece's 555 sort code against the standard, or empty when it falls outside the boxes. */
+    public record SortCode(String reference, CmcParts parts, Optional<String> code) {}
+
+    /** One box of a 555 sort: its code and the pieces in it. */
+    public record SortBox(String code, List<String> pieces) {
+        /** Copies the pieces. */
+        public SortBox {
+            pieces = List.copyOf(pieces);
+        }
+    }
+
     /** The straight distance. */
     public static final Difference STRAIGHT = new Straight();
 
     /** CMC 2:1, the ratio a shade is accepted or rejected on. */
-    public static final Difference CMC_ACCEPTABILITY = new Cmc(2, 1);
+    public static final Cmc CMC_ACCEPTABILITY = new Cmc(2, 1);
 
     private Lot() {}
 
@@ -111,14 +134,28 @@ public final class Lot {
 
     /** CMC(l:c) of a batch against a standard. */
     static double cmc(Reading standard, Reading batch, Cmc weights) {
+        CmcParts parts = cmcParts(standard, batch, weights);
+        return Math.sqrt(
+                parts.lightness() * parts.lightness() + parts.chroma() * parts.chroma() + parts.hue() * parts.hue());
+    }
+
+    /**
+     * A batch against a standard, split into CMC's lightness, chroma and hue parts with their signs:
+     * a batch lighter than the standard, brighter, or turned anticlockwise round the hue circle reads
+     * positive.
+     */
+    public static CmcParts cmcParts(Reading standard, Reading batch, Cmc weights) {
+        Check.required(weights, "weights");
         double chroma = Math.hypot(standard.red(), standard.yellow());
-        double dl = standard.lightness() - batch.lightness();
-        double dc = chroma - Math.hypot(batch.red(), batch.yellow());
+        double dl = batch.lightness() - standard.lightness();
+        double dc = Math.hypot(batch.red(), batch.yellow()) - chroma;
         double da = standard.red() - batch.red();
         double db = standard.yellow() - batch.yellow();
-        double dh = Math.sqrt(Math.max(0, da * da + db * db - dc * dc));
         double hue = Math.toDegrees(Math.atan2(standard.yellow(), standard.red()));
         hue = hue < 0 ? hue + 360 : hue;
+        double turn = Math.toDegrees(Math.atan2(batch.yellow(), batch.red())) - hue;
+        turn = ((turn % 360) + 540) % 360 - 180;
+        double dh = Math.signum(turn) * Math.sqrt(Math.max(0, da * da + db * db - dc * dc));
         double sl = standard.lightness() < 16
                 ? 0.511
                 : (0.040975 * standard.lightness()) / (1 + 0.01765 * standard.lightness());
@@ -128,10 +165,50 @@ public final class Lot {
                 ? 0.56 + Math.abs(0.2 * Math.cos(Math.toRadians(hue + 168)))
                 : 0.36 + Math.abs(0.4 * Math.cos(Math.toRadians(hue + 35)));
         double sh = sc * (f * t + 1 - f);
-        double l = dl / (weights.lightness() * sl);
-        double c = dc / (weights.chroma() * sc);
-        double h = dh / sh;
-        return Math.sqrt(l * l + c * c + h * h);
+        return new CmcParts(dl / (weights.lightness() * sl), dc / (weights.chroma() * sc), dh / sh);
+    }
+
+    /**
+     * A piece's 555 code against the standard on CMC 2:1, a step being {@code step} units of each
+     * part. Each digit is five plus the whole steps the part is out, and a piece more than four steps
+     * out on any part gets no code.
+     */
+    public static SortCode sortCode(Reading standard, Reading piece, double step) {
+        Check.positiveNumber(step, "step");
+        CmcParts parts = cmcParts(standard, piece, CMC_ACCEPTABILITY);
+        List<Long> digits = List.of(parts.lightness(), parts.chroma(), parts.hue()).stream()
+                .map(part -> 5 + Math.round(part / step))
+                .toList();
+        boolean sorted = digits.stream().allMatch(digit -> digit >= 1 && digit <= 9);
+        return new SortCode(
+                piece.reference(),
+                new CmcParts(
+                        Numeric.roundTo(parts.lightness(), 4),
+                        Numeric.roundTo(parts.chroma(), 4),
+                        Numeric.roundTo(parts.hue(), 4)),
+                sorted
+                        ? Optional.of(digits.stream().map(String::valueOf).collect(Collectors.joining()))
+                        : Optional.empty());
+    }
+
+    /**
+     * Sort a delivery on the 555 system: the pieces gathered by code, the box on the standard first and
+     * the rest in code order, with the pieces that would not sort in a box of their own coded
+     * {@code out}.
+     */
+    public static List<SortBox> shadeSort(Reading standard, List<Reading> readings, double step) {
+        Check.array(readings, "readings", 1);
+        Map<String, List<String>> boxes = new TreeMap<>(Comparator.comparing((String code) -> !code.equals("555"))
+                .thenComparing(code -> code.equals("out"))
+                .thenComparing(Comparator.naturalOrder()));
+        for (Reading reading : readings) {
+            SortCode code = sortCode(standard, reading, step);
+            boxes.computeIfAbsent(code.code().orElse("out"), key -> new ArrayList<>())
+                    .add(reading.reference());
+        }
+        List<SortBox> out = new ArrayList<>(boxes.size());
+        boxes.forEach((code, pieces) -> out.add(new SortBox(code, pieces)));
+        return List.copyOf(out);
     }
 
     /** Every pair of readings with the distance between them, in the order they were named. */

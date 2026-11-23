@@ -226,9 +226,11 @@ class LotTest {
             Reading other = shade("R2", 50, 32, 18);
             assertThat(Lot.shadeDistance(red, other, Lot.CMC_ACCEPTABILITY))
                     .isEqualTo(Lot.shadeDistance(other, red, Lot.CMC_ACCEPTABILITY));
+            double oneWay = Lot.cmc(red, other, Lot.CMC_ACCEPTABILITY);
+            double otherWay = Lot.cmc(other, red, Lot.CMC_ACCEPTABILITY);
+            assertThat(oneWay).isNotEqualTo(otherWay);
             assertThat(Lot.shadeDistance(red, other, Lot.CMC_ACCEPTABILITY))
-                    .isGreaterThanOrEqualTo(Lot.cmc(red, other, new Lot.Cmc(2, 1)) - 0.00005)
-                    .isGreaterThanOrEqualTo(Lot.cmc(other, red, new Lot.Cmc(2, 1)) - 0.00005);
+                    .isEqualTo(Math.round(Math.max(oneWay, otherWay) * 10000) / 10000.0);
         }
 
         @Test
@@ -266,6 +268,77 @@ class LotTest {
         void leavesTheStraightDistanceAsTheDefault() {
             assertThat(Lot.shadeDistance(A, C)).isEqualTo(Lot.shadeDistance(A, C, Lot.STRAIGHT));
             assertThat(Lot.shadeDistance(A, C, new Lot.Straight())).isEqualTo(4.2426);
+        }
+    }
+
+    @Nested
+    class ShadeSort {
+
+        private final Reading standard = shade("STD", 60, 20, 10);
+
+        @Test
+        void splitsCmcIntoSignedPartsThatAddBackUp() {
+            Lot.CmcParts parts = Lot.cmcParts(standard, shade("L", 61, 20, 10), Lot.CMC_ACCEPTABILITY);
+            assertThat(parts.lightness()).isGreaterThan(0);
+            assertThat(parts.chroma()).isEqualTo(0);
+            assertThat(parts.hue()).isEqualTo(0);
+            Lot.CmcParts dark = Lot.cmcParts(standard, shade("D", 59, 20, 10), Lot.CMC_ACCEPTABILITY);
+            assertThat(dark.lightness()).isLessThan(0);
+            Reading turned = shade("H", 60, 19, 12);
+            Lot.CmcParts mixed = Lot.cmcParts(standard, turned, Lot.CMC_ACCEPTABILITY);
+            assertThat(Math.sqrt(mixed.lightness() * mixed.lightness()
+                            + mixed.chroma() * mixed.chroma()
+                            + mixed.hue() * mixed.hue()))
+                    .isCloseTo(Lot.cmc(standard, turned, Lot.CMC_ACCEPTABILITY), within(1e-9));
+            assertThat(mixed.hue()).isGreaterThan(0);
+        }
+
+        @Test
+        void codesAPieceOnTheStandardFiveFiveFive() {
+            assertThat(Lot.sortCode(standard, shade("P1", 60, 20, 10), 0.5).code())
+                    .contains("555");
+        }
+
+        @Test
+        void movesTheDigitOneStepForEveryStepOfDifference() {
+            double step = Lot.cmcParts(standard, shade("x", 61, 20, 10), Lot.CMC_ACCEPTABILITY)
+                    .lightness();
+            assertThat(Lot.sortCode(standard, shade("P2", 61, 20, 10), step).code())
+                    .contains("655");
+            assertThat(Lot.sortCode(standard, shade("P3", 58, 20, 10), step).code())
+                    .hasValueSatisfying(code -> assertThat(code).startsWith("3"));
+        }
+
+        @Test
+        void leavesAPieceTooFarOutUncoded() {
+            Lot.SortCode code = Lot.sortCode(standard, shade("P4", 70, 20, 10), 0.5);
+            assertThat(code.code()).isEmpty();
+            assertThat(code.parts().lightness()).isGreaterThan(4.5 * 0.5);
+        }
+
+        @Test
+        void boxesTheDeliveryOnTheStandardFirstAndTheMisfitsLast() {
+            double step = Lot.cmcParts(standard, shade("x", 61, 20, 10), Lot.CMC_ACCEPTABILITY)
+                    .lightness();
+            List<Lot.SortBox> boxes = Lot.shadeSort(
+                    standard,
+                    List.of(
+                            shade("A", 61, 20, 10),
+                            shade("B", 60, 20, 10),
+                            shade("C", 80, 20, 10),
+                            shade("D", 61, 20, 10),
+                            shade("E", 59, 20, 10)),
+                    step);
+            assertThat(boxes).extracting(Lot.SortBox::code).containsExactly("555", "455", "655", "out");
+            assertThat(boxes.get(2).pieces()).containsExactly("A", "D");
+            assertThat(boxes.get(3).pieces()).containsExactly("C");
+        }
+
+        @Test
+        void refusesAStepOfNothing() {
+            assertThatThrownBy(() -> Lot.sortCode(standard, standard, 0)).isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Lot.shadeSort(standard, List.of(), 1))
+                    .isInstanceOf(InvalidArgumentException.class);
         }
     }
 }
