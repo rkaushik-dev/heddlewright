@@ -19,6 +19,12 @@ import java.util.stream.Collectors;
  * <p>A twill is written as an alternating count of warp-up and warp-down threads, {@code 2/2} or
  * {@code 3/1} or {@code 2/1/1/2}, and the numbers add up to the repeat size. The drawdown is drawn
  * with the first pick at the bottom, so a Z twill, the right-hand one, runs up to the right.
+ *
+ * <p>Every twill here is the same rule woven on a different drafting order: end {@code e} of the
+ * cloth carries end {@code order[e]} of the straight twill. A straight order gives the continuous
+ * twill, a broken order the broken twill, a point the pointed twill, and a reversal with the return
+ * shifted half a repeat gives the broken herringbone of a suiting, where the two lines meet face to
+ * back at the turn instead of in a point.
  */
 public final class Twill {
 
@@ -155,14 +161,38 @@ public final class Twill {
     public static Matrix twillWeave(List<Integer> counts, Options options) {
         Check.required(options.handedness(), "handedness");
         Check.integer(options.step(), "step", Bounds.atLeast(1));
-        List<Integer> pattern = twillPattern(counts);
-        int size = pattern.size();
+        int size = twillRepeatSize(counts);
         int rows = Check.integer(options.picks().orElse(size), "picks", Bounds.atLeast(1));
         int cols = Check.integer(options.ends().orElse(size), "ends", Bounds.atLeast(1));
-        int[][] repeat = new int[rows][cols];
-        for (int p = 0; p < rows; p += 1) {
-            for (int e = 0; e < cols; e += 1) {
-                int shift = options.handedness() == Hand.Z ? e - p * options.step() : e + p * options.step();
+        List<Integer> straight = new ArrayList<>(cols);
+        for (int e = 0; e < cols; e += 1) {
+            straight.add(e);
+        }
+        return woven(twillPattern(counts), straight, rows, options.handedness(), options.step());
+    }
+
+    /**
+     * A twill woven on any drafting order, stepping one end a pick: end {@code e} of the cloth weaves
+     * as end {@code order[e]} of the straight twill, counted from 0.
+     */
+    public static Matrix twillOnOrder(List<Integer> counts, List<?> order, int picks, Hand handedness) {
+        Check.required(handedness, "handedness");
+        Check.integer(picks, "picks", Bounds.atLeast(1));
+        List<Object> given = Check.array(order, "order", 1);
+        List<Integer> ends = new ArrayList<>(given.size());
+        for (int e = 0; e < given.size(); e += 1) {
+            ends.add(Check.integer(given.get(e), "order[" + e + "]", Bounds.atLeast(0)));
+        }
+        return woven(twillPattern(counts), ends, picks, handedness, 1);
+    }
+
+    private static Matrix woven(List<Integer> pattern, List<Integer> order, int picks, Hand handedness, int step) {
+        int size = pattern.size();
+        int[][] repeat = new int[picks][order.size()];
+        for (int p = 0; p < picks; p += 1) {
+            for (int e = 0; e < order.size(); e += 1) {
+                int source = order.get(e);
+                int shift = handedness == Hand.Z ? source - p * step : source + p * step;
                 repeat[p][e] = pattern.get(Numeric.mod(shift, size));
             }
         }
@@ -187,20 +217,9 @@ public final class Twill {
      * counts the notation asked for.
      */
     public static Matrix brokenTwill(List<Integer> counts, int breakAt, Hand handedness) {
-        List<Integer> pattern = twillPattern(counts);
-        int size = pattern.size();
+        int size = twillRepeatSize(counts);
         Check.integer(breakAt, "breakAt", Bounds.atLeast(1));
-        Check.required(handedness, "handedness");
-        List<Integer> order = brokenDraftingOrder(size, breakAt);
-        int[][] repeat = new int[size][size];
-        for (int p = 0; p < size; p += 1) {
-            for (int e = 0; e < order.size(); e += 1) {
-                int source = order.get(e);
-                int shift = handedness == Hand.Z ? source - p : source + p;
-                repeat[p][e] = pattern.get(Numeric.mod(shift, size));
-            }
-        }
-        return Matrix.of(repeat);
+        return twillOnOrder(counts, brokenDraftingOrder(size, breakAt), size, handedness);
     }
 
     /**
@@ -239,18 +258,35 @@ public final class Twill {
      * {@code width} is how many ends run before the turn.
      */
     public static Matrix pointedTwill(List<Integer> counts, int width, int picks) {
-        List<Integer> pattern = twillPattern(counts);
-        int size = pattern.size();
         Check.integer(width, "width", Bounds.atLeast(2));
         int cols = width * 2 - 2;
-        int[][] repeat = new int[picks][cols];
-        for (int p = 0; p < picks; p += 1) {
-            for (int e = 0; e < cols; e += 1) {
-                int folded = e < width ? e : cols - e;
-                repeat[p][e] = pattern.get(Numeric.mod(folded - p, size));
-            }
+        List<Integer> order = new ArrayList<>(cols);
+        for (int e = 0; e < cols; e += 1) {
+            order.add(e < width ? e : cols - e);
         }
-        return Matrix.of(repeat);
+        return twillOnOrder(counts, order, picks, Hand.Z);
+    }
+
+    /** A broken herringbone turning after {@code width} ends, one repeat long. */
+    public static Matrix herringbone(String notation, int width) {
+        List<Integer> counts = parseTwillNotation(notation);
+        return herringbone(counts, width, twillRepeatSize(counts));
+    }
+
+    /**
+     * A broken herringbone: {@code width} ends of Z twill, then {@code width} ends running back with
+     * the return shifted half the repeat, so the two lines butt against each other at the turn and
+     * the stripe edge reads as a clean cut. No end is shared at the turn, so the repeat is twice the
+     * width.
+     */
+    public static Matrix herringbone(List<Integer> counts, int width, int picks) {
+        int size = twillRepeatSize(counts);
+        Check.integer(width, "width", Bounds.atLeast(2));
+        List<Integer> order = new ArrayList<>(width * 2);
+        for (int e = 0; e < width * 2; e += 1) {
+            order.add(e < width ? e : width * 2 - 1 - e + size / 2);
+        }
+        return twillOnOrder(counts, order, picks, Hand.Z);
     }
 
     /** The angle of a twill stepping one end a pick, in degrees. */

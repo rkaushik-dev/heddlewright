@@ -273,4 +273,80 @@ class TwillTest {
             assertThat(Hand.HANDEDNESS.stream().map(Hand::toString)).containsExactly("Z", "S");
         }
     }
+
+    @Nested
+    class OnAnyDraftingOrder {
+
+        @Test
+        void weavesTheStraightTwillOnAStraightOrder() {
+            assertThat(Twill.twillOnOrder(List.of(2, 2), List.of(0, 1, 2, 3), 4, Twill.Hand.Z))
+                    .isEqualTo(Twill.twillWeave("2/2"));
+            assertThat(Twill.twillOnOrder(List.of(3, 1), List.of(0, 1, 2, 3), 4, Twill.Hand.S))
+                    .isEqualTo(Twill.twillWeave("3/1", Options.DEFAULT.handedness(Twill.Hand.S)));
+        }
+
+        @Test
+        void weavesTheBrokenAndPointedTwillsOnTheirOrders() {
+            assertThat(Twill.twillOnOrder(List.of(2, 2), Twill.brokenDraftingOrder(4, 2), 4, Twill.Hand.Z))
+                    .isEqualTo(Twill.brokenTwill("2/2", 2));
+            assertThat(Twill.twillOnOrder(List.of(2, 2), List.of(0, 1, 2, 3, 2, 1), 4, Twill.Hand.Z))
+                    .isEqualTo(Twill.pointedTwill("2/2", 4));
+        }
+
+        @Test
+        void takesAnOrderThatRunsPastTheRepeat() {
+            assertThat(Twill.twillOnOrder(List.of(2, 2), List.of(4, 5), 1, Twill.Hand.Z)
+                            .format())
+                    .isEqualTo("XX");
+        }
+
+        @Test
+        void refusesAnEmptyOrderANegativeEndOrNoHand() {
+            assertThatThrownBy(() -> Twill.twillOnOrder(List.of(2, 2), List.of(), 4, Twill.Hand.Z))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Twill.twillOnOrder(List.of(2, 2), List.of(0, -1), 4, Twill.Hand.Z))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Twill.twillOnOrder(List.of(2, 2), List.of(0, 1), 4, null))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+    }
+
+    @Nested
+    class Herringbone {
+
+        @Test
+        void breaksTheLineHalfARepeatAtTheTurn() {
+            assertThat(Twill.herringbone("2/2", 4).format()).isEqualTo("XX..XX..\n.XX.X..X\n..XX..XX\nX..X.XX.");
+        }
+
+        @Test
+        void putsFaceAgainstBackAtTheTurnOnEveryPick() {
+            Matrix cloth = Twill.herringbone("2/2", 4);
+            for (int p = 0; p < cloth.rows(); p += 1) {
+                assertThat(cloth.get(p, 3)).isNotEqualTo(cloth.get(p, 4));
+                assertThat(cloth.get(p, 7)).isNotEqualTo(cloth.get(p, 0));
+            }
+        }
+
+        @Test
+        void sharesNoEndAtTheTurnSoTheRepeatIsTwiceTheWidth() {
+            assertThat(Twill.herringbone("2/2", 6).cols()).isEqualTo(12);
+            assertThat(Twill.pointedTwill("2/2", 6).cols()).isEqualTo(10);
+        }
+
+        @Test
+        void keepsTheUpAndDownCountsOfTheNotationOnEveryPick() {
+            Matrix cloth = Twill.herringbone(List.of(3, 1), 4, 8);
+            assertThat(cloth.rows()).isEqualTo(8);
+            for (int p = 0; p < cloth.rows(); p += 1) {
+                assertThat(cloth.row(p).stream().mapToInt(Integer::intValue).sum())
+                        .isEqualTo(6);
+            }
+        }
+
+        @Test
+        void refusesATurnNarrowerThanTwoEnds() {
+            assertThatThrownBy(() -> Twill.herringbone("2/2", 1)).isInstanceOf(InvalidArgumentException.class);
+        }
+    }
 }
