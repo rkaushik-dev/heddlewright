@@ -90,9 +90,20 @@ public final class Report {
             double interlacement,
             Firmness firmness) {}
 
-    /** The floats, which is what decides whether the cloth will wear. */
+    /**
+     * The floats, which is what decides whether the cloth will wear: the face first, then the back,
+     * which is the side a lining or a seat rubs against.
+     */
     public record FloatSection(
-            int longestWarp, int longestWeft, double meanWarp, double meanWeft, int floatLimit, int over) {}
+            int longestWarp,
+            int longestWeft,
+            double meanWarp,
+            double meanWeft,
+            int floatLimit,
+            int over,
+            int longestBackWarp,
+            int longestBackWeft,
+            int overOnBack) {}
 
     /** The sett and the cover, which need the yarn as well as the cloth. */
     public record SettSection(
@@ -156,25 +167,48 @@ public final class Report {
     }
 
     /** House limits a report is held to; any left out is not checked. */
-    public record Specification(OptionalDouble maxFloat, OptionalDouble minInterlacement, OptionalDouble maxGsm) {
+    public record Specification(
+            OptionalDouble maxFloat,
+            OptionalDouble maxBackFloat,
+            OptionalDouble minInterlacement,
+            OptionalDouble maxGsm) {
 
         /** No limits at all. */
-        public static final Specification NONE =
-                new Specification(OptionalDouble.empty(), OptionalDouble.empty(), OptionalDouble.empty());
+        public static final Specification NONE = new Specification(
+                OptionalDouble.empty(), OptionalDouble.empty(), OptionalDouble.empty(), OptionalDouble.empty());
 
-        /** The same limits with a longest float. */
+        /** The same limits with a longest float on the face. */
         public Specification maxFloat(double limit) {
-            return new Specification(OptionalDouble.of(limit), minInterlacement, maxGsm);
+            return new Specification(OptionalDouble.of(limit), maxBackFloat, minInterlacement, maxGsm);
+        }
+
+        /** The same limits with a longest float on the back. */
+        public Specification maxBackFloat(double limit) {
+            return new Specification(maxFloat, OptionalDouble.of(limit), minInterlacement, maxGsm);
         }
 
         /** The same limits with a least interlacement. */
         public Specification minInterlacement(double limit) {
-            return new Specification(maxFloat, OptionalDouble.of(limit), maxGsm);
+            return new Specification(maxFloat, maxBackFloat, OptionalDouble.of(limit), maxGsm);
         }
 
         /** The same limits with a heaviest weight. */
         public Specification maxGsm(double limit) {
-            return new Specification(maxFloat, minInterlacement, OptionalDouble.of(limit));
+            return new Specification(maxFloat, maxBackFloat, minInterlacement, OptionalDouble.of(limit));
+        }
+    }
+
+    /** One limit as a report is checked against it: what it is called, its figure, and which way it cuts. */
+    private record Limit(String code, OptionalDouble limit, OptionalDouble got, boolean ceiling) {
+        Optional<Finding> broken() {
+            if (limit.isEmpty() || got.isEmpty()) {
+                return Optional.empty();
+            }
+            double value = got.getAsDouble();
+            double bound = limit.getAsDouble();
+            return (ceiling ? value > bound : value < bound)
+                    ? Optional.of(new Finding(code, value, bound))
+                    : Optional.empty();
         }
     }
 
@@ -215,6 +249,7 @@ public final class Report {
     public static FloatSection floatSection(Draft draft, int floatLimit) {
         Matrix cloth = Drawdown.drawdownFromDraft(draft);
         Floats.Longest longest = Floats.longestFloat(cloth);
+        Floats.Longest back = Floats.longestFloat(cloth, Floats.Side.BACK);
         WarpWeft mean = Floats.meanFloatLength(cloth);
         return new FloatSection(
                 longest.warp(),
@@ -222,7 +257,10 @@ public final class Report {
                 mean.warp(),
                 mean.weft(),
                 floatLimit,
-                Floats.floatsOver(cloth, floatLimit).size());
+                Floats.floatsOver(cloth, floatLimit).size(),
+                back.warp(),
+                back.weft(),
+                Floats.floatsOver(cloth, floatLimit, Floats.Side.BACK).size());
     }
 
     /** The sett and the cover, which need the yarn as well as the cloth. */
@@ -290,31 +328,34 @@ public final class Report {
         return String.join("\n", blocks);
     }
 
-    /** Whether a report clears a set of house limits. */
+    /** Whether a report clears a set of house limits, the findings in the order the limits are listed. */
     public static Verdict meetsSpecification(ClothReport report, Specification limits) {
-        List<Finding> findings = new ArrayList<>();
-        if (limits.maxFloat().isPresent()) {
-            int longest =
-                    Math.max(report.floats().longestWarp(), report.floats().longestWeft());
-            if (longest > limits.maxFloat().getAsDouble()) {
-                findings.add(
-                        new Finding("float_too_long", longest, limits.maxFloat().getAsDouble()));
-            }
-        }
-        if (limits.minInterlacement().isPresent()
-                && report.structure().interlacement()
-                        < limits.minInterlacement().getAsDouble()) {
-            findings.add(new Finding(
-                    "too_open",
-                    report.structure().interlacement(),
-                    limits.minInterlacement().getAsDouble()));
-        }
-        if (limits.maxGsm().isPresent()
-                && report.weight().isPresent()
-                && report.weight().get().gsm() > limits.maxGsm().getAsDouble()) {
-            findings.add(new Finding(
-                    "too_heavy", report.weight().get().gsm(), limits.maxGsm().getAsDouble()));
-        }
+        FloatSection floats = report.floats();
+        List<Limit> checks = List.of(
+                new Limit(
+                        "float_too_long",
+                        limits.maxFloat(),
+                        OptionalDouble.of(Math.max(floats.longestWarp(), floats.longestWeft())),
+                        true),
+                new Limit(
+                        "back_float_too_long",
+                        limits.maxBackFloat(),
+                        OptionalDouble.of(Math.max(floats.longestBackWarp(), floats.longestBackWeft())),
+                        true),
+                new Limit(
+                        "too_open",
+                        limits.minInterlacement(),
+                        OptionalDouble.of(report.structure().interlacement()),
+                        false),
+                new Limit(
+                        "too_heavy",
+                        limits.maxGsm(),
+                        report.weight()
+                                .map(weight -> OptionalDouble.of(weight.gsm()))
+                                .orElse(OptionalDouble.empty()),
+                        true));
+        List<Finding> findings =
+                checks.stream().flatMap(check -> check.broken().stream()).toList();
         return new Verdict(findings.isEmpty(), findings);
     }
 

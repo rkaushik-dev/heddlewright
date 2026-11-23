@@ -59,6 +59,23 @@ class ReportTest {
         }
 
         @Test
+        void readsTheBackOfABalancedTwillTheSameAsTheFace() {
+            Report.FloatSection floats = Report.floatSection(DRAFT);
+            assertThat(floats.longestBackWarp()).isEqualTo(floats.longestWarp());
+            assertThat(floats.longestBackWeft()).isEqualTo(floats.longestWeft());
+            assertThat(floats.overOnBack()).isEqualTo(0);
+        }
+
+        @Test
+        void turnsTheLongFaceFloatsOfAnOpenTwillIntoBackFloatsTheOtherWay() {
+            Report.FloatSection floats = Report.floatSection(sparse(), 1);
+            assertThat(floats.longestBackWarp()).isEqualTo(floats.longestWeft());
+            assertThat(floats.longestBackWeft()).isEqualTo(floats.longestWarp());
+            assertThat(floats.overOnBack()).isGreaterThan(0);
+            assertThat(Json.of(floats).get("overOnBack")).isEqualTo(Json.of(floats.overOnBack()));
+        }
+
+        @Test
         void countsMoreOverATighterLimit() {
             assertThat(Report.floatSection(DRAFT, 1).over()).isGreaterThan(0);
         }
@@ -180,6 +197,52 @@ class ReportTest {
                             .get(0)
                             .code())
                     .isEqualTo("too_open");
+        }
+
+        @Test
+        void holdsTheBackToItsOwnLimit() {
+            ClothReport open = Report.clothReport(sparse(), Options.forCount(30));
+            int back = Math.max(open.floats().longestBackWarp(), open.floats().longestBackWeft());
+            Report.Verdict verdict = Report.meetsSpecification(open, Specification.NONE.maxBackFloat(back - 1));
+            assertThat(verdict.meets()).isFalse();
+            assertThat(verdict.findings()).containsExactly(new Report.Finding("back_float_too_long", back, back - 1));
+            assertThat(Report.meetsSpecification(open, Specification.NONE.maxBackFloat(back))
+                            .meets())
+                    .isTrue();
+        }
+
+        @Test
+        void listsEveryLimitBrokenInTheOrderTheLimitsRun() {
+            Specification tight = Specification.NONE
+                    .maxGsm(50)
+                    .minInterlacement(0.9)
+                    .maxBackFloat(1)
+                    .maxFloat(1);
+            assertThat(Report.meetsSpecification(report, tight).findings())
+                    .extracting(Report.Finding::code)
+                    .containsExactly("float_too_long", "back_float_too_long", "too_open", "too_heavy");
+        }
+
+        @Test
+        void skipsTheWeightLimitWhenTheReportHasNoWeight() {
+            ClothReport light = Report.clothReport(DRAFT, Options.forCount(30));
+            assertThat(Report.meetsSpecification(light, Specification.NONE.maxGsm(1))
+                            .meets())
+                    .isTrue();
+        }
+
+        @Test
+        void passesAFigureSittingExactlyOnItsLimit() {
+            assertThat(Report.meetsSpecification(
+                                    report, Specification.NONE.maxFloat(2).maxBackFloat(2))
+                            .meets())
+                    .isTrue();
+            assertThat(Report.meetsSpecification(
+                                    report,
+                                    Specification.NONE.minInterlacement(
+                                            report.structure().interlacement()))
+                            .meets())
+                    .isTrue();
         }
 
         @Test
