@@ -275,4 +275,94 @@ class FourPointTest {
             assertThat(score.pointsPer100SquareYards()).isEqualTo(roundTwo((80.0 * 3600) / (60 * 100)));
         }
     }
+
+    @Nested
+    class TenPoint {
+
+        private int tenPoints(Object... fields) {
+            return FourPoint.defectPoints(Json.obj(fields), FourPoint.Scheme.TEN_POINT);
+        }
+
+        @Test
+        void bandsALengthAtOneFiveAndTenInches() {
+            assertThat(tenPoints("inches", 1)).isEqualTo(1);
+            assertThat(tenPoints("inches", 1.1)).isEqualTo(3);
+            assertThat(tenPoints("inches", 5)).isEqualTo(3);
+            assertThat(tenPoints("inches", 7)).isEqualTo(5);
+            assertThat(tenPoints("inches", 10)).isEqualTo(5);
+            assertThat(tenPoints("inches", 10.5)).isEqualTo(10);
+        }
+
+        @Test
+        void bandsAHoleLikeAnyOtherDefect() {
+            assertThat(tenPoints("kind", "hole", "inches", 0.5)).isEqualTo(1);
+            assertThat(tenPoints("kind", "hole", "inches", 3)).isEqualTo(3);
+        }
+
+        @Test
+        void leavesTheFourPointBandsAsTheyWere() {
+            assertThat(FourPoint.Scheme.FOUR_POINT.points(FourPoint.Kind.LENGTH, 7))
+                    .isEqualTo(3);
+            assertThat(FourPoint.Scheme.FOUR_POINT.points(FourPoint.Kind.HOLE, 0.5))
+                    .isEqualTo(2);
+            assertThat(FourPoint.Scheme.FOUR_POINT.points(FourPoint.Kind.HOLE, 3))
+                    .isEqualTo(4);
+        }
+
+        @Test
+        void capsAYardAtTenAndRunsADefectAtTenAYard() {
+            FourPoint.Score score = FourPoint.scoreRoll(Json.obj(
+                    "scheme",
+                    "ten_point",
+                    "widthInches",
+                    60,
+                    "yards",
+                    50,
+                    "defects",
+                    List.of(
+                            Json.obj("yard", 2, "inches", 12),
+                            Json.obj("yard", 2, "inches", 4),
+                            Json.obj("yard", 9, "through", 10))));
+            assertThat(score.scheme()).isEqualTo(FourPoint.Scheme.TEN_POINT);
+            assertThat(score.rawPoints()).isEqualTo(10 + 3 + 10 + 10);
+            assertThat(score.totalPoints()).isEqualTo(30);
+            assertThat(score.cappedYards()).containsExactly(2);
+        }
+
+        @Test
+        void passesARollWhileItsPointsDoNotOutnumberItsYards() {
+            JsonObject sheet = roll(60, 20, defectsOf(4, 4)).with("scheme", "ten_point");
+            FourPoint.RollGrade grade = FourPoint.gradeRoll(FourPoint.scoreRoll(sheet));
+            assertThat(grade.points()).isEqualTo(0.6);
+            assertThat(grade.acceptance()).isEqualTo(1);
+            assertThat(grade.accepted()).isTrue();
+            assertThat(FourPoint.gradeRoll(FourPoint.scoreRoll(
+                                    roll(60, 10, defectsOf(4, 4)).with("scheme", "ten_point")))
+                            .accepted())
+                    .isFalse();
+        }
+
+        @Test
+        void gradesTheSameSheetDifferentlyOnTheTwoSchemes() {
+            JsonObject smalls = roll(36, 10, defectsOf(5, 1));
+            assertThat(FourPoint.gradeRoll(FourPoint.scoreRoll(smalls)).accepted())
+                    .isFalse();
+            assertThat(FourPoint.gradeRoll(FourPoint.scoreRoll(smalls.with("scheme", "ten_point")))
+                            .accepted())
+                    .isTrue();
+            JsonObject longs = roll(60, 100, defectsOf(11, 12));
+            assertThat(FourPoint.gradeRoll(FourPoint.scoreRoll(longs)).accepted())
+                    .isTrue();
+            assertThat(FourPoint.gradeRoll(FourPoint.scoreRoll(longs.with("scheme", "ten_point")))
+                            .accepted())
+                    .isFalse();
+        }
+
+        @Test
+        void refusesASchemeItDoesNotKnow() {
+            assertThatThrownBy(() -> FourPoint.scoreRoll(roll(60, 10, List.of()).with("scheme", "six_point")))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThat(FourPoint.Scheme.TEN_POINT).hasToString("ten_point");
+        }
+    }
 }

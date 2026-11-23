@@ -167,6 +167,20 @@ class ClothRoutesTest {
         }
 
         @Test
+        void gradesOnTheTenPointSystemWhenTheQueryNamesIt() {
+            book(
+                    Json.obj("code", "weft_bar", "yard", 3, "inches", 12),
+                    Json.obj("code", "slub", "yard", 8, "inches", 4));
+            Json grading =
+                    get("/pieces/P1001/grade", Map.of("scheme", "ten_point")).body();
+            assertThat(grading.get("score").get("totalPoints")).isEqualTo(Json.of(13));
+            assertThat(grading.get("score").get("scheme")).isEqualTo(Json.of("ten_point"));
+            assertThat(grading.get("grade").get("points")).isEqualTo(Json.of(0.13));
+            assertThat(get("/pieces/P1001/grade", Map.of("scheme", "six_point")).status())
+                    .isEqualTo(400);
+        }
+
+        @Test
         void refusesAnAcceptanceOfNothing() {
             assertThat(get("/pieces/P1001/grade", Map.of("acceptance", "0")).status())
                     .isEqualTo(400);

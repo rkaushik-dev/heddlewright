@@ -75,7 +75,9 @@ public final class ClothRoutes {
                     "widthInches",
                     piece.get("widthInches"),
                     "yards",
-                    piece.get("yards")));
+                    piece.get("yards"),
+                    "scheme",
+                    call.query().containsKey("scheme") ? Json.of(call.query().get("scheme")) : Json.NULL));
             String given = call.query().get("acceptance");
             FourPoint.RollGrade grade = given == null
                     ? FourPoint.gradeRoll(score)

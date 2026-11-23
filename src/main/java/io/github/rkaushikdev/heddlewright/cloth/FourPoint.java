@@ -32,6 +32,11 @@ import java.util.Map;
  * <pre>
  *   points per 100 square yards = total points x 3600 / (width in inches x yards)
  * </pre>
+ *
+ * <p>Some buyers still grade on the older ten-point system, and a roll is scored on whichever one the
+ * contract names. Ten-point bands a defect at one inch, five and ten, scoring one, three, five and ten,
+ * with holes banded the same way; a yard carries ten points at most, and a roll is first quality while
+ * its points do not outnumber its yards.
  */
 public final class FourPoint {
 
@@ -45,6 +50,67 @@ public final class FourPoint {
         /** Read a kind by its name, refusing anything else. */
         public static Kind parse(Object text) {
             return Check.member(text, "defect.kind", values());
+        }
+
+        @Override
+        public String toString() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    /** One band of a scheme: a defect up to this many inches scores this many points. */
+    public record Band(double upToInches, int points) {}
+
+    /** A grading scheme: its bands for lengths and for holes, what a longer defect scores, and its limit. */
+    public enum Scheme {
+        /** The four-point system, judged per hundred square yards. */
+        FOUR_POINT(
+                List.of(new Band(3, 1), new Band(6, 2), new Band(9, 3)),
+                List.of(new Band(1, 2)),
+                MAX_POINTS_PER_YARD,
+                DEFAULT_ACCEPTANCE),
+        /** The ten-point system, judged per linear yard. */
+        TEN_POINT(
+                List.of(new Band(1, 1), new Band(5, 3), new Band(10, 5)),
+                List.of(new Band(1, 1), new Band(5, 3), new Band(10, 5)),
+                10,
+                1);
+
+        private final List<Band> lengths;
+        private final List<Band> holes;
+        private final int most;
+        private final double acceptance;
+
+        Scheme(List<Band> lengths, List<Band> holes, int most, double acceptance) {
+            this.lengths = lengths;
+            this.holes = holes;
+            this.most = most;
+            this.acceptance = acceptance;
+        }
+
+        /** The points a defect of this kind and length scores. */
+        public int points(Kind kind, double inches) {
+            for (Band band : kind == Kind.HOLE ? holes : lengths) {
+                if (inches <= band.upToInches()) {
+                    return band.points();
+                }
+            }
+            return most;
+        }
+
+        /** The most a defect scores, which is also the most a yard may carry and what a running defect scores. */
+        public int most() {
+            return most;
+        }
+
+        /** The usual limit: points per hundred square yards for four-point, per linear yard for ten-point. */
+        public double acceptance() {
+            return acceptance;
+        }
+
+        /** Read a scheme by its name, refusing anything else. */
+        public static Scheme parse(Object text) {
+            return Check.member(text, "scheme", values());
         }
 
         @Override
@@ -68,14 +134,16 @@ public final class FourPoint {
     /** One yard's points, before and after the cap. */
     public record YardScore(int yard, int points, double counted) {}
 
-    /** A scored roll. */
+    /** A scored roll, with the scheme it was scored on and the yards it was scored over. */
     public record Score(
             int defects,
             double rawPoints,
             double totalPoints,
             List<Integer> cappedYards,
             double pointsPer100SquareYards,
-            List<YardScore> perYard) {
+            List<YardScore> perYard,
+            Scheme scheme,
+            double yards) {
         /** Copies the lists. */
         public Score {
             cappedYards = List.copyOf(cappedYards);
@@ -97,6 +165,11 @@ public final class FourPoint {
      * scores the full four points for every yard it touches.
      */
     public static int defectPoints(Object defect) {
+        return defectPoints(defect, Scheme.FOUR_POINT);
+    }
+
+    /** The points a single defect scores on the scheme given. */
+    public static int defectPoints(Object defect, Scheme scheme) {
         JsonObject record = Check.plainObject(defect, "defect");
         Json given = record.get("kind");
         Kind kind = Kind.parse(given.isNullish() ? Json.of("length") : given);
@@ -106,22 +179,9 @@ public final class FourPoint {
             }
             Json from = record.get("yard");
             int first = wholeYard(from.isNullish() ? Json.of(1) : from, "defect.yard");
-            return (runEnd(record.get("through"), "defect.through", first, 0) - first + 1) * RUNNING_POINTS_PER_YARD;
+            return (runEnd(record.get("through"), "defect.through", first, 0) - first + 1) * scheme.most();
         }
-        double inches = Check.positiveNumber(record.get("inches"), "defect.inches");
-        if (kind == Kind.HOLE) {
-            return inches <= 1 ? 2 : 4;
-        }
-        if (inches <= 3) {
-            return 1;
-        }
-        if (inches <= 6) {
-            return 2;
-        }
-        if (inches <= 9) {
-            return 3;
-        }
-        return 4;
+        return scheme.points(kind, Check.positiveNumber(record.get("inches"), "defect.inches"));
     }
 
     /** Score a roll with the usual four-point cap. */
@@ -130,17 +190,20 @@ public final class FourPoint {
     }
 
     /**
-     * Score a roll from its record: {@code defects}, {@code widthInches}, {@code yards} and an
-     * optional {@code cap}.
+     * Score a roll from its record: {@code defects}, {@code widthInches}, {@code yards}, and
+     * optionally the {@code scheme} (four-point unless named) and a {@code cap} other than the scheme's.
      */
     public static Score scoreRoll(Object roll) {
         JsonObject record = Check.plainObject(roll, "roll");
+        Json named = record.get("scheme");
+        Scheme scheme = named.isNullish() ? Scheme.FOUR_POINT : Scheme.parse(named);
         Json cap = record.get("cap");
         return score(
                 record.get("defects"),
                 record.get("widthInches"),
                 record.get("yards"),
-                cap.isMissing() ? Json.of(MAX_POINTS_PER_YARD) : cap);
+                cap.isMissing() ? Json.of(scheme.most()) : cap,
+                scheme);
     }
 
     /**
@@ -148,10 +211,10 @@ public final class FourPoint {
      * added up.
      */
     public static Score scoreRoll(List<?> defects, double widthInches, double yards, double cap) {
-        return score(defects, Json.of(widthInches), Json.of(yards), Json.of(cap));
+        return score(defects, Json.of(widthInches), Json.of(yards), Json.of(cap), Scheme.FOUR_POINT);
     }
 
-    private static Score score(Object defects, Object widthGiven, Object yardsGiven, Object capGiven) {
+    private static Score score(Object defects, Object widthGiven, Object yardsGiven, Object capGiven, Scheme scheme) {
         List<Object> list = Check.array(defects, "defects");
         double widthInches = Check.positiveNumber(widthGiven, "widthInches");
         double yards = Check.positiveNumber(yardsGiven, "yards");
@@ -163,14 +226,14 @@ public final class FourPoint {
             int yard = yardOf(at.isNullish() ? Json.of(1) : at, "defects[" + index + "].yard", yards, index);
             Json through = fieldOf(defect, "through");
             if (through.isNullish()) {
-                perYard.merge(yard, defectPoints(defect), Integer::sum);
+                perYard.merge(yard, defectPoints(defect, scheme), Integer::sum);
                 continue;
             }
             // Read for its refusals alone: a hole cannot run, and a run cannot end before it starts.
-            defectPoints(defect);
+            defectPoints(defect, scheme);
             int last = yardOf(through, "defects[" + index + "].through", yards, index);
             for (int each = yard; each <= last; each += 1) {
-                perYard.merge(each, RUNNING_POINTS_PER_YARD, Integer::sum);
+                perYard.merge(each, scheme.most(), Integer::sum);
             }
         }
         List<YardScore> capped = new ArrayList<>();
@@ -190,7 +253,9 @@ public final class FourPoint {
                 totalPoints,
                 cappedYards,
                 Numeric.roundTo((totalPoints * 3600) / (widthInches * yards), 2),
-                sorted);
+                sorted,
+                scheme,
+                yards);
     }
 
     /** The whole yard a position along the roll falls in. */
@@ -226,15 +291,22 @@ public final class FourPoint {
         return Json.MISSING;
     }
 
-    /** Whether a scored roll passes the trade limit. */
+    /** Whether a scored roll passes the usual limit of the scheme it was scored on. */
     public static RollGrade gradeRoll(Score score) {
-        return gradeRoll(score, DEFAULT_ACCEPTANCE);
+        return gradeRoll(score, score.scheme().acceptance());
     }
 
-    /** Whether a scored roll passes, and by how much. */
+    /**
+     * Whether a scored roll passes, and by how much: a four-point roll on its points per hundred
+     * square yards, a ten-point roll on its points per linear yard.
+     */
     public static RollGrade gradeRoll(Score score, double acceptance) {
         Check.positiveNumber(acceptance, "acceptance");
-        double points = score.pointsPer100SquareYards();
+        double points =
+                switch (score.scheme()) {
+                    case FOUR_POINT -> score.pointsPer100SquareYards();
+                    case TEN_POINT -> Numeric.roundTo(score.totalPoints() / score.yards(), 2);
+                };
         return new RollGrade(points, acceptance, points <= acceptance, Numeric.roundTo(acceptance - points, 2));
     }
 
