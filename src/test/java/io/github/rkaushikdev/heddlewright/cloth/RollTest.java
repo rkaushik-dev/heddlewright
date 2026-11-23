@@ -230,4 +230,89 @@ class RollTest {
             assertThat(Roll.firstQualityShare(List.of())).isEqualTo(0);
         }
     }
+
+    @Nested
+    class CutAndGrade {
+
+        private final List<Object> sheet = List.of(
+                Json.obj("yard", 10, "inches", 2),
+                Json.obj("yard", 60, "through", 63),
+                Json.obj("yard", 95, "kind", "hole", "inches", 2));
+
+        private List<Roll.Graded> cut(Object... at) {
+            return Roll.cutAndGrade(
+                    PIECE,
+                    java.util.Arrays.stream(at).map(n -> (Number) n).toList(),
+                    sheet,
+                    FourPoint.Scheme.FOUR_POINT,
+                    FourPoint.DEFAULT_ACCEPTANCE);
+        }
+
+        @Test
+        void gradesEachLengthOnTheDefectsThatFellInIt() {
+            List<Roll.Graded> lengths = cut(55, 75);
+            assertThat(lengths)
+                    .extracting(graded -> graded.piece().reference())
+                    .containsExactly("P1001-1", "P1001-2", "P1001-3");
+            assertThat(lengths)
+                    .extracting(graded -> graded.piece().grade())
+                    .containsExactly(Grade.FIRST, Grade.SECOND, Grade.FIRST);
+            assertThat(lengths.get(1).score().totalPoints()).isEqualTo(16);
+            assertThat(lengths.get(2).defects()).containsExactly(Json.obj("yard", 20, "kind", "hole", "inches", 2));
+        }
+
+        @Test
+        void rejectsALengthPastTwiceTheLimit() {
+            List<Roll.Graded> lengths = cut(58, 64);
+            assertThat(lengths.get(1).piece().grade()).isEqualTo(Grade.REJECT);
+            assertThat(lengths.get(1).grade().points())
+                    .isGreaterThan(FourPoint.DEFAULT_ACCEPTANCE * Roll.SECONDS_FACTOR);
+        }
+
+        @Test
+        void splitsARunningFaultBetweenTheLengthsItRunsInto() {
+            List<Roll.Graded> lengths = cut(62);
+            assertThat(lengths.get(0).defects()).contains(Json.obj("yard", 60, "through", 62));
+            assertThat(lengths.get(1).defects()).contains(Json.obj("yard", 0.001, "through", 1));
+            assertThat(lengths.get(0).score().totalPoints() - 1).isEqualTo(12);
+            assertThat(lengths.get(1).score().totalPoints() - 4).isEqualTo(4);
+        }
+
+        @Test
+        void chargesBothSidesForAYardTheCutFallsInside() {
+            List<Roll.Graded> lengths = cut(61.5);
+            assertThat(lengths.get(0).score().totalPoints() - 1).isEqualTo(12);
+            assertThat(lengths.get(1).score().totalPoints() - 4).isEqualTo(8);
+        }
+
+        @Test
+        void gradesTheWholePieceWhenThereIsNoCut() {
+            List<Roll.Graded> whole = cut();
+            assertThat(whole).hasSize(1);
+            assertThat(whole.get(0).piece().reference()).isEqualTo("P1001");
+            assertThat(whole.get(0).score().totalPoints()).isEqualTo(1 + 16 + 4);
+            assertThat(whole.get(0).piece().grade()).isEqualTo(Grade.FIRST);
+        }
+
+        @Test
+        void gradesOnTheTenPointSystemWhenAsked() {
+            List<Roll.Graded> lengths = Roll.cutAndGrade(PIECE, List.of(55, 75), sheet, FourPoint.Scheme.TEN_POINT, 1);
+            assertThat(lengths.get(1).score().totalPoints()).isEqualTo(40);
+            assertThat(lengths.get(1).piece().grade()).isEqualTo(Grade.SECOND);
+        }
+
+        @Test
+        void refusesCutsThatDoNotRunForwardsOrASheetWithoutYards() {
+            assertThatThrownBy(() -> cut(75, 75)).hasMessageContaining("run forwards");
+            assertThatThrownBy(() -> Roll.cutAndGrade(
+                            PIECE, List.of(), List.of(Json.obj("inches", 2)), FourPoint.Scheme.FOUR_POINT, 40))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void stillNamesTheTwoHalvesOfASingleCutWithTheirSuffixes() {
+            assertThat(Roll.cutPiece(PIECE, 30)).extracting(Piece::reference).containsExactly("P1001A", "P1001B");
+            assertThat(Roll.cutPiece(PIECE, 30)).extracting(Piece::yards).containsExactly(30.0, 70.0);
+        }
+    }
 }

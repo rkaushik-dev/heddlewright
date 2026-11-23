@@ -13,6 +13,8 @@ import io.github.rkaushikdev.heddlewright.util.Text;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.stream.IntStream;
 
 /**
  * The piece register.
@@ -24,6 +26,11 @@ import java.util.Locale;
  *
  * <p>The register functions take pieces as records, so a {@link Piece} and the stored JSON of one
  * read the same.
+ *
+ * <p>A faulty piece is cut so the bad stretch comes away on its own, and every length that comes out
+ * is graded on the defects that fell in it: first quality inside the grading limit, seconds up to
+ * twice it, and rejects past that. A running fault cut through is split between the lengths it runs
+ * into, so each is charged only for the yards it carries.
  */
 public final class Roll {
 
@@ -82,6 +89,17 @@ public final class Roll {
         }
     }
 
+    /** A length cut from a piece, its defects moved to its own yards, and how it scored and graded. */
+    public record Graded(Piece piece, List<JsonObject> defects, FourPoint.Score score, FourPoint.RollGrade grade) {
+        /** Copies the defects. */
+        public Graded {
+            defects = List.copyOf(defects);
+        }
+    }
+
+    /** How far past the grading limit a length may score and still go as seconds, as a multiple of it. */
+    public static final double SECONDS_FACTOR = 2;
+
     /** A register against the length the loom wove. */
     public record Reconciliation(double wovenYards, double registeredYards, double difference, boolean balanced) {}
 
@@ -132,36 +150,104 @@ public final class Roll {
                     "the cut falls at or past the end of the piece", Json.obj("atYards", atYards, "yards", yards));
         }
         Check.array(suffixes, "suffixes", 2, 2);
-        String reference = Text.string(record.get("reference"));
-        return List.of(
-                createPiece(record.with("reference", reference + suffixes.get(0), "yards", atYards)),
-                createPiece(record.with(
-                        "reference", reference + suffixes.get(1), "yards", Numeric.roundTo(yards - atYards, 3))));
+        return cutAt(record, List.of(atYards), suffixes);
     }
 
-    /** Cut a piece at several points at once, left to right. */
+    /** Cut a piece at several points at once, left to right, numbering the lengths from one. */
     public static List<Piece> cutPieces(Object piece, List<? extends Number> atYards) {
         Check.array(atYards, "atYards", 1);
         JsonObject record = Check.plainObject(piece, "piece");
+        List<Double> points = cutPoints(record, atYards);
+        return cutAt(
+                record,
+                points,
+                IntStream.rangeClosed(1, points.size() + 1)
+                        .mapToObj(n -> "-" + n)
+                        .toList());
+    }
+
+    /** The points a piece is cut at, sorted, each forward of the last and inside the piece. */
+    private static List<Double> cutPoints(JsonObject record, List<? extends Number> atYards) {
         double yards = record.get("yards").asDouble();
-        String reference = Text.string(record.get("reference"));
         List<Double> points = atYards.stream().map(Number::doubleValue).sorted().toList();
-        List<Piece> out = new ArrayList<>();
-        double start = 0;
-        for (int index = 0; index < points.size(); index += 1) {
-            double at = points.get(index);
-            if (at <= start || at >= yards) {
+        double previous = 0;
+        for (double at : points) {
+            if (at <= previous || at >= yards) {
                 throw new InvalidArgumentException(
                         "the cuts must run forwards inside the piece",
-                        Json.obj("at", at, "previous", start, "yards", yards));
+                        Json.obj("at", at, "previous", previous, "yards", yards));
             }
-            out.add(createPiece(
-                    record.with("reference", reference + "-" + (index + 1), "yards", Numeric.roundTo(at - start, 3))));
-            start = at;
+            previous = at;
         }
-        out.add(createPiece(record.with(
-                "reference", reference + "-" + (points.size() + 1), "yards", Numeric.roundTo(yards - start, 3))));
+        return points;
+    }
+
+    /** The lengths between the cut points, each a piece named with its suffix. */
+    private static List<Piece> cutAt(JsonObject record, List<Double> points, List<String> suffixes) {
+        String reference = Text.string(record.get("reference"));
+        List<Double> edges = edges(record, points);
+        List<Piece> out = new ArrayList<>(edges.size() - 1);
+        for (int index = 0; index + 1 < edges.size(); index += 1) {
+            out.add(createPiece(record.with(
+                    "reference",
+                    reference + suffixes.get(index),
+                    "yards",
+                    Numeric.roundTo(edges.get(index + 1) - edges.get(index), 3))));
+        }
         return List.copyOf(out);
+    }
+
+    private static List<Double> edges(JsonObject record, List<Double> points) {
+        List<Double> edges = new ArrayList<>(List.of(0.0));
+        edges.addAll(points);
+        edges.add(record.get("yards").asDouble());
+        return edges;
+    }
+
+    /**
+     * Cut a piece at the points given and grade every length on the defects that fall in it, on the
+     * scheme and limit given. A defect sits in the length its yard falls in; a running fault is split
+     * at every cut it crosses.
+     */
+    public static List<Graded> cutAndGrade(
+            Object piece, List<? extends Number> atYards, List<?> defects, FourPoint.Scheme scheme, double acceptance) {
+        JsonObject record = Check.plainObject(piece, "piece");
+        Check.required(scheme, "scheme");
+        List<Double> points = atYards.isEmpty() ? List.of() : cutPoints(record, atYards);
+        List<Piece> lengths = points.isEmpty() ? List.of(createPiece(record)) : cutPieces(record, points);
+        List<Double> edges = edges(record, points);
+        List<Object> sheet = Check.array(defects, "defects");
+        List<Graded> out = new ArrayList<>(lengths.size());
+        for (int index = 0; index < lengths.size(); index += 1) {
+            double from = edges.get(index);
+            double to = edges.get(index + 1);
+            List<JsonObject> mine = new ArrayList<>();
+            for (Object entry : sheet) {
+                within(Check.plainObject(entry, "defect"), from, to).ifPresent(mine::add);
+            }
+            Piece length = lengths.get(index);
+            FourPoint.Score score = FourPoint.scoreRoll(Json.obj(
+                    "defects", mine, "widthInches", length.widthInches(), "yards", length.yards(), "scheme", scheme));
+            FourPoint.RollGrade grade = FourPoint.gradeRoll(score, acceptance);
+            Grade sold = grade.accepted()
+                    ? Grade.FIRST
+                    : grade.points() <= acceptance * SECONDS_FACTOR ? Grade.SECOND : Grade.REJECT;
+            out.add(new Graded(regrade(length, sold), mine, score, grade));
+        }
+        return List.copyOf(out);
+    }
+
+    /** A defect moved onto a length running from {@code from} to {@code to}, or nothing when it misses it. */
+    private static Optional<JsonObject> within(JsonObject defect, double from, double to) {
+        double yard = Check.positiveNumber(defect.get("yard"), "defect.yard");
+        Json runs = defect.get("through");
+        double through = runs.isNullish() ? yard : Check.number(runs, "defect.through");
+        if (through <= from || yard > to) {
+            return Optional.empty();
+        }
+        JsonObject moved = defect.with("yard", Numeric.roundTo(Math.max(yard, from + 0.001) - from, 3));
+        return Optional.of(
+                runs.isNullish() ? moved : moved.with("through", Numeric.roundTo(Math.min(through, to) - from, 3)));
     }
 
     /** Regrade a piece without touching its length. */
