@@ -159,6 +159,14 @@ class ClothRoutesTest {
         }
 
         @Test
+        void gradesARunningFaultAtFourPointsForEveryYardItRuns() {
+            book(Json.obj("code", "reed_mark", "yard", 10, "through", 19));
+            Json score = get("/pieces/P1001/grade").body().get("score");
+            assertThat(score.get("totalPoints")).isEqualTo(Json.of(40));
+            assertThat(((JsonArray) score.get("perYard")).size()).isEqualTo(10);
+        }
+
+        @Test
         void refusesAnAcceptanceOfNothing() {
             assertThat(get("/pieces/P1001/grade", Map.of("acceptance", "0")).status())
                     .isEqualTo(400);

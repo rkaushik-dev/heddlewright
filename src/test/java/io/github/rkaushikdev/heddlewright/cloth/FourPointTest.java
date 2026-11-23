@@ -212,4 +212,67 @@ class FourPointTest {
             assertThatThrownBy(() -> FourPoint.scoreLot(List.of())).isInstanceOf(InvalidArgumentException.class);
         }
     }
+
+    @Nested
+    class RunningDefects {
+
+        @Test
+        void scoresFourPointsInEveryYardTheDefectRunsThrough() {
+            FourPoint.Score score = FourPoint.scoreRoll(roll(60, 100, List.of(Json.obj("yard", 10, "through", 14))));
+            assertThat(score.perYard()).extracting(FourPoint.YardScore::yard).containsExactly(10, 11, 12, 13, 14);
+            assertThat(score.perYard()).allMatch(entry -> entry.points() == FourPoint.RUNNING_POINTS_PER_YARD);
+            assertThat(score.totalPoints()).isEqualTo(20);
+            assertThat(score.defects()).isEqualTo(1);
+        }
+
+        @Test
+        void needsNoLengthBecauseItIsNotMeasured() {
+            FourPoint.Score score = FourPoint.scoreRoll(roll(60, 10, List.of(Json.obj("yard", 2, "through", 2))));
+            assertThat(score.perYard()).containsExactly(new FourPoint.YardScore(2, 4, 4));
+        }
+
+        @Test
+        void takesPartYardsIntoTheYardsTheyFallIn() {
+            FourPoint.Score score = FourPoint.scoreRoll(roll(60, 10, List.of(Json.obj("yard", 2.2, "through", 3.5))));
+            assertThat(score.perYard()).extracting(FourPoint.YardScore::yard).containsExactly(3, 4);
+        }
+
+        @Test
+        void stillCapsAYardItSharesWithAnotherDefect() {
+            FourPoint.Score score = FourPoint.scoreRoll(
+                    roll(60, 10, List.of(Json.obj("yard", 3, "inches", 2), Json.obj("yard", 3, "through", 4))));
+            assertThat(score.rawPoints()).isEqualTo(1 + 4 + 4);
+            assertThat(score.totalPoints()).isEqualTo(8);
+            assertThat(score.cappedYards()).containsExactly(3);
+        }
+
+        @Test
+        void refusesOneThatEndsBeforeItStartsOrRunsOffTheRoll() {
+            assertThatThrownBy(() -> FourPoint.scoreRoll(roll(60, 10, List.of(Json.obj("yard", 5, "through", 4)))))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("ends before it starts");
+            assertThatThrownBy(() -> FourPoint.scoreRoll(roll(60, 10, List.of(Json.obj("yard", 5, "through", 12)))))
+                    .hasMessageContaining("past the end");
+        }
+
+        @Test
+        void scoresTheWholeRunAsOneDefectOnItsOwn() {
+            assertThat(points("yard", 3, "through", 5)).isEqualTo(12);
+            assertThat(points("yard", 3.5, "through", 4)).isEqualTo(4);
+        }
+
+        @Test
+        void refusesAHoleThatRuns() {
+            assertThatThrownBy(() -> points("kind", "hole", "yard", 1, "through", 3))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("hole cannot run");
+        }
+
+        @Test
+        void failsARollThatOneLongRunningFaultCondemns() {
+            FourPoint.Score score = FourPoint.scoreRoll(roll(60, 100, List.of(Json.obj("yard", 1, "through", 20))));
+            assertThat(FourPoint.gradeRoll(score).accepted()).isFalse();
+            assertThat(score.pointsPer100SquareYards()).isEqualTo(roundTwo((80.0 * 3600) / (60 * 100)));
+        }
+    }
 }

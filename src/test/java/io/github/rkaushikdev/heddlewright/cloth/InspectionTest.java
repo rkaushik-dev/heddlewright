@@ -204,4 +204,52 @@ class InspectionTest {
             assertThat(sheet.points()).isEqualTo(0);
         }
     }
+
+    @Nested
+    class RunningFaults {
+
+        @Test
+        void booksAReedMarkThatRunsThroughSeveralYards() {
+            Defect mark = Inspection.recordDefect(Json.obj("code", "reed_mark", "yard", 10, "through", 12.5));
+            assertThat(mark.through()).hasValue(12.5);
+            assertThat(mark.inches()).isEqualTo(90);
+            assertThat(mark.points()).isEqualTo(16);
+        }
+
+        @Test
+        void keepsALengthTheGraderMeasured() {
+            Defect mark =
+                    Inspection.recordDefect(Json.obj("code", "weft_bar", "yard", 10, "through", 11, "inches", 30));
+            assertThat(mark.inches()).isEqualTo(30);
+            assertThat(mark.points()).isEqualTo(8);
+        }
+
+        @Test
+        void leavesAnOrdinaryFaultWithNoRun() {
+            Defect slub = Inspection.recordDefect(Json.obj("code", "slub", "yard", 4, "inches", 2));
+            assertThat(slub.through()).isEmpty();
+            assertThat(Json.of(slub).get("through").isMissing()).isTrue();
+        }
+
+        @Test
+        void refusesARunThatEndsBeforeItStartsOrAHoleThatRuns() {
+            assertThatThrownBy(() -> Inspection.recordDefect(Json.obj("code", "reed_mark", "yard", 10, "through", 9)))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Inspection.recordDefect(Json.obj("code", "hole", "yard", 1, "through", 2)))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("hole cannot run");
+        }
+
+        @Test
+        void putsTheRunAtTheTopOfTheSheet() {
+            List<Defect> sheet = Inspection.recordSheet(List.of(
+                    Json.obj("code", "slub", "yard", 1, "inches", 2),
+                    Json.obj("code", "reed_mark", "yard", 20, "through", 23)));
+            Inspection.Sheet printed = Inspection.inspectionSheet(sheet, 60, 100);
+            assertThat(printed.points()).isEqualTo(1 + 16);
+            assertThat(printed.worstDefect())
+                    .hasValueSatisfying(worst -> assertThat(worst.code()).isEqualTo("reed_mark"));
+            assertThat(printed.dominantOrigin()).contains(Inspection.Origin.LOOM);
+        }
+    }
 }

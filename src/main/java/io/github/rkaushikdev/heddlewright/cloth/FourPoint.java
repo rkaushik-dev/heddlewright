@@ -22,6 +22,10 @@ import java.util.Map;
  * score more than four points however many defects it holds, which stops one bad yard from
  * condemning a roll on its own.
  *
+ * <p>A running defect, one that carries on down the piece such as a reed mark, a float line or a
+ * shaded band, is not measured at all: every yard it runs through scores the full four points, from
+ * the yard it starts in to the yard named as its {@code through}.
+ *
  * <p>The result is quoted as points per hundred square yards, so rolls of different widths and
  * lengths can be compared:
  *
@@ -55,6 +59,9 @@ public final class FourPoint {
     /** No yard counts for more than this. */
     public static final int MAX_POINTS_PER_YARD = 4;
 
+    /** What every yard of a running defect scores, whatever its width. */
+    public static final int RUNNING_POINTS_PER_YARD = MAX_POINTS_PER_YARD;
+
     /** The usual trade limit: forty points per hundred square yards. */
     public static final double DEFAULT_ACCEPTANCE = 40;
 
@@ -84,11 +91,23 @@ public final class FourPoint {
 
     private FourPoint() {}
 
-    /** The points a single defect scores, read from its record: a kind (length by default) and inches. */
+    /**
+     * The points a single defect scores, read from its record: a kind (length by default) and inches,
+     * or for a running defect the {@code yard} it starts in and the yard it runs {@code through}, which
+     * scores the full four points for every yard it touches.
+     */
     public static int defectPoints(Object defect) {
         JsonObject record = Check.plainObject(defect, "defect");
         Json given = record.get("kind");
         Kind kind = Kind.parse(given.isNullish() ? Json.of("length") : given);
+        if (!record.get("through").isNullish()) {
+            if (kind == Kind.HOLE) {
+                throw new InvalidArgumentException("a hole cannot run down the piece", Json.obj("kind", kind));
+            }
+            Json from = record.get("yard");
+            int first = wholeYard(from.isNullish() ? Json.of(1) : from, "defect.yard");
+            return (runEnd(record.get("through"), "defect.through", first, 0) - first + 1) * RUNNING_POINTS_PER_YARD;
+        }
         double inches = Check.positiveNumber(record.get("inches"), "defect.inches");
         if (kind == Kind.HOLE) {
             return inches <= 1 ? 2 : 4;
@@ -141,14 +160,18 @@ public final class FourPoint {
         for (int index = 0; index < list.size(); index += 1) {
             Object defect = list.get(index);
             Json at = fieldOf(defect, "yard");
-            int yard = (int) Math.ceil(Check.number(
-                    at.isNullish() ? Json.of(1) : at, "defects[" + index + "].yard", Bounds.atLeast(0.0001)));
-            if (yard > Math.ceil(yards)) {
-                throw new InvalidArgumentException(
-                        "a defect falls past the end of the roll",
-                        Json.obj("yard", yard, "yards", yards, "index", index));
+            int yard = yardOf(at.isNullish() ? Json.of(1) : at, "defects[" + index + "].yard", yards, index);
+            Json through = fieldOf(defect, "through");
+            if (through.isNullish()) {
+                perYard.merge(yard, defectPoints(defect), Integer::sum);
+                continue;
             }
-            perYard.merge(yard, defectPoints(defect), Integer::sum);
+            // Read for its refusals alone: a hole cannot run, and a run cannot end before it starts.
+            defectPoints(defect);
+            int last = yardOf(through, "defects[" + index + "].through", yards, index);
+            for (int each = yard; each <= last; each += 1) {
+                perYard.merge(each, RUNNING_POINTS_PER_YARD, Integer::sum);
+            }
         }
         List<YardScore> capped = new ArrayList<>();
         perYard.forEach((yard, points) -> capped.add(new YardScore(yard, points, Math.min(points, cap))));
@@ -168,6 +191,31 @@ public final class FourPoint {
                 cappedYards,
                 Numeric.roundTo((totalPoints * 3600) / (widthInches * yards), 2),
                 sorted);
+    }
+
+    /** The whole yard a position along the roll falls in. */
+    private static int wholeYard(Json at, String field) {
+        return (int) Math.ceil(Check.number(at, field, Bounds.atLeast(0.0001)));
+    }
+
+    /** The last whole yard a running defect touches, refusing one that ends before it starts. */
+    private static int runEnd(Json through, String field, int first, int index) {
+        int last = wholeYard(through, field);
+        if (last < first) {
+            throw new InvalidArgumentException(
+                    "a running defect ends before it starts", Json.obj("yard", first, "through", last, "index", index));
+        }
+        return last;
+    }
+
+    /** The whole yard a position along the roll falls in, refusing one past the end of the roll. */
+    private static int yardOf(Json at, String field, double yards, int index) {
+        int yard = wholeYard(at, field);
+        if (yard > Math.ceil(yards)) {
+            throw new InvalidArgumentException(
+                    "a defect falls past the end of the roll", Json.obj("yard", yard, "yards", yards, "index", index));
+        }
+        return yard;
     }
 
     /** A field of a value that may not be an object: the field of an object, and absent for anything else. */

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 /**
  * The fault catalogue and the inspection sheet.
@@ -57,11 +58,19 @@ public final class Inspection {
     public record Fault(String code, String name, Origin origin, Kind kind) {}
 
     /**
-     * A booked defect: the catalogue entry, where and how long it is, the grader's note, and its
-     * points. A note that is not text is kept as its text.
+     * A booked defect: the catalogue entry, where and how long it is, the yard a running fault carries
+     * on to, the grader's note, and its points. A note that is not text is kept as its text.
      */
     public record Defect(
-            String code, String name, Origin origin, Kind kind, double inches, double yard, String note, int points) {}
+            String code,
+            String name,
+            Origin origin,
+            Kind kind,
+            double inches,
+            double yard,
+            OptionalDouble through,
+            String note,
+            int points) {}
 
     /** A printed inspection sheet. */
     public record Sheet(
@@ -147,14 +156,28 @@ public final class Inspection {
         return listFaults().stream().filter(fault -> fault.origin() == wanted).toList();
     }
 
-    /** Book a defect from the grader's entry, filling in the kind and the origin from the catalogue. */
+    /**
+     * Book a defect from the grader's entry, filling in the kind and the origin from the catalogue. A
+     * fault that runs down the piece is booked with the yard it runs {@code through}; its length is
+     * the run itself unless the grader measured one, and it scores four points a yard. A hole cannot
+     * run.
+     */
     public static Defect recordDefect(Object entry) {
         JsonObject record = Check.plainObject(entry, "entry");
         Fault fault = faultByCode(record.get("code"));
-        double inches = Check.number(record.get("inches"), "entry.inches", Bounds.atLeast(0.01));
         double yard = Check.number(record.get("yard"), "entry.yard", Bounds.atLeast(0.0001));
         Json note = record.get("note");
-        int points = FourPoint.defectPoints(Json.obj("kind", fault.kind(), "inches", inches));
+        Json runs = record.get("through");
+        OptionalDouble through = runs.isNullish()
+                ? OptionalDouble.empty()
+                : OptionalDouble.of(Check.number(runs, "entry.through", Bounds.atLeast(yard)));
+        double inches = through.isPresent() && record.get("inches").isNullish()
+                ? Numeric.roundTo((through.getAsDouble() - yard) * 36, 2)
+                : Check.number(record.get("inches"), "entry.inches", Bounds.atLeast(0.01));
+        int points = FourPoint.defectPoints(
+                through.isPresent()
+                        ? Json.obj("kind", fault.kind(), "yard", yard, "through", through.getAsDouble())
+                        : Json.obj("kind", fault.kind(), "inches", inches));
         return new Defect(
                 fault.code(),
                 fault.name(),
@@ -162,6 +185,7 @@ public final class Inspection {
                 fault.kind(),
                 inches,
                 yard,
+                through,
                 note.isNullish() ? "" : Text.string(note),
                 points);
     }
