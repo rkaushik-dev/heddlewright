@@ -19,6 +19,11 @@ import java.util.Map;
  *
  * <p>Direction matters as much as amount. A warp and a weft twisted the same way lie together and
  * the cloth reads flat; twisted opposite ways they stand apart and the twill line shows.
+ *
+ * <p>Twisting also shortens a yarn. The turns wind the fibres round the axis, so a metre of strand
+ * comes out of the twister as rather less than a metre of yarn, and that yarn is heavier per metre
+ * than the strands that went in. A folded yarn is costed and set on its resultant count, and a
+ * resultant worked from the singles alone reads a few per cent too fine.
  */
 public final class Twist {
 
@@ -41,7 +46,8 @@ public final class Twist {
     /** How a yarn's twist reads against the multiplier its purpose wants. */
     public record TwistClass(double multiplier, double wanted, double ratio, String reading) {}
 
-    private static final double COTTON_CONSTANT = 590.5414;
+    /** How far either side of the wanted multiplier a yarn still reads as normally twisted. */
+    public static final double CLASS_TOLERANCE = 0.15;
 
     private static final Map<String, Double> MULTIPLIERS = multipliers();
 
@@ -64,8 +70,12 @@ public final class Twist {
     /** The twist multiplier a yarn is running at. */
     public static double twistMultiplier(double turnsPerInch, double count, String system) {
         Check.positiveNumber(turnsPerInch, "turnsPerInch");
-        double ne = COTTON_CONSTANT / Count.toTex(count, system);
-        return Numeric.roundTo(turnsPerInch / Math.sqrt(ne), 4);
+        return Numeric.roundTo(turnsPerInch / Math.sqrt(in(count, system, "ne")), 4);
+    }
+
+    /** A count in one system read in another, unrounded, which the multipliers are worked on. */
+    private static double in(double count, String system, String wanted) {
+        return Count.fromTex(Count.toTex(count, system), wanted);
     }
 
     /** The turns an inch a wanted multiplier asks for on a cotton count yarn. */
@@ -76,15 +86,13 @@ public final class Twist {
     /** The turns an inch a wanted multiplier asks for. */
     public static double turnsForMultiplier(double multiplier, double count, String system) {
         Check.positiveNumber(multiplier, "multiplier");
-        double ne = COTTON_CONSTANT / Count.toTex(count, system);
-        return Numeric.roundTo(multiplier * Math.sqrt(ne), 2);
+        return Numeric.roundTo(multiplier * Math.sqrt(in(count, system, "ne")), 2);
     }
 
     /** The same in metric: turns a metre over the square root of the metric count. */
     public static double metricTwistFactor(double turnsPerMetre, double count, String system) {
         Check.positiveNumber(turnsPerMetre, "turnsPerMetre");
-        double nm = 1000 / Count.toTex(count, system);
-        return Numeric.roundTo(turnsPerMetre / Math.sqrt(nm), 4);
+        return Numeric.roundTo(turnsPerMetre / Math.sqrt(in(count, system, "nm")), 4);
     }
 
     /** Turns an inch to turns a metre. */
@@ -120,12 +128,7 @@ public final class Twist {
         double running = twistMultiplier(turnsPerInch, count, system);
         double wanted = multiplierFor(purpose);
         double ratio = Numeric.roundTo(running / wanted, 3);
-        String reading = "normal";
-        if (ratio < 0.85) {
-            reading = "soft";
-        } else if (ratio > 1.15) {
-            reading = "hard";
-        }
+        String reading = ratio < 1 - CLASS_TOLERANCE ? "soft" : ratio > 1 + CLASS_TOLERANCE ? "hard" : "normal";
         return new TwistClass(running, wanted, ratio, reading);
     }
 
@@ -151,6 +154,33 @@ public final class Twist {
         Check.positiveNumber(singleTurnsPerInch, "singleTurnsPerInch");
         Check.number(share, "share", Bounds.between(0.1, 1.5));
         return Numeric.roundTo(singleTurnsPerInch * share, 2);
+    }
+
+    /**
+     * The contraction twisting took out of a yarn, as a percentage of the length before: a metre of
+     * strand that comes off as 97 centimetres of yarn has contracted 3 per cent.
+     */
+    public static double twistContraction(double untwistedLength, double twistedLength) {
+        Check.positiveNumber(untwistedLength, "untwistedLength");
+        Check.positiveNumber(twistedLength, "twistedLength");
+        if (twistedLength > untwistedLength) {
+            throw new InvalidArgumentException(
+                    "a twisted yarn cannot come out longer than the strand that went in",
+                    Json.obj("untwistedLength", untwistedLength, "twistedLength", twistedLength));
+        }
+        return Numeric.roundTo(((untwistedLength - twistedLength) / untwistedLength) * 100, 3);
+    }
+
+    /**
+     * The resultant count of a folded yarn once the folding twist has contracted it. The singles are
+     * folded as {@link Count#foldedCount} folds them, and the contraction makes the result heavier: a
+     * direct count rises by one over one less the contraction, and an indirect count falls by it.
+     */
+    public static double foldedCount(List<? extends Number> counts, String system, double contractionPercent) {
+        Check.number(contractionPercent, "contractionPercent", Bounds.between(0, 50));
+        double folded = Count.foldedCount(counts, system);
+        double kept = 1 - contractionPercent / 100;
+        return Numeric.roundTo(Count.isIndirect(system) ? folded * kept : folded / kept, 4);
     }
 
     /** Whether the twist of a warp and a weft will show a Z twill line or hide it. */

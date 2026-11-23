@@ -9,6 +9,7 @@ import io.github.rkaushikdev.heddlewright.util.InvalidArgumentException;
 import io.github.rkaushikdev.heddlewright.util.Json;
 import io.github.rkaushikdev.heddlewright.util.JsonArray;
 import io.github.rkaushikdev.heddlewright.yarn.Twist.Direction;
+import java.util.List;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -158,6 +159,67 @@ class TwistTest {
         void standsOutWhenTheTwistRunsAgainstTheTwill() {
             assertThat(Twist.twillContrast(Direction.S, Direction.S, Direction.Z))
                     .isEqualTo("pronounced");
+        }
+    }
+
+    @Nested
+    class Contraction {
+
+        @Test
+        void readsTheShorteningAsAShareOfTheStrand() {
+            assertThat(Twist.twistContraction(100, 97)).isEqualTo(3);
+            assertThat(Twist.twistContraction(1, 1)).isEqualTo(0);
+        }
+
+        @Test
+        void refusesAYarnThatCameOutLonger() {
+            assertThatThrownBy(() -> Twist.twistContraction(100, 101))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("longer");
+        }
+
+        @Test
+        void makesAFoldedIndirectCountCoarserByTheContraction() {
+            assertThat(Twist.foldedCount(List.of(40, 40), "ne", 0)).isEqualTo(20);
+            assertThat(Twist.foldedCount(List.of(40, 40), "ne", 4)).isEqualTo(19.2);
+        }
+
+        @Test
+        void makesAFoldedDirectCountHeavierByTheContraction() {
+            assertThat(Twist.foldedCount(List.of(15, 15), "tex", 4)).isEqualTo(31.25);
+            assertThat(Twist.foldedCount(List.of(15, 15), "tex", 4))
+                    .isGreaterThan(Count.foldedCount(List.of(15, 15), "tex"));
+        }
+
+        @Test
+        void agreesBetweenTheSystemsOnceContracted() {
+            double ne = Twist.foldedCount(List.of(40, 40), "ne", 3);
+            double tex = Twist.foldedCount(List.of(Count.toTex(40, "ne"), Count.toTex(40, "ne")), "tex", 3);
+            assertThat(Count.toTex(ne, "ne")).isCloseTo(tex, within(0.001));
+        }
+
+        @Test
+        void refusesAContractionNoTwisterCouldGive() {
+            assertThatThrownBy(() -> Twist.foldedCount(List.of(40, 40), "ne", 60))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Twist.foldedCount(List.of(40, 40), "ne", -1))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void classesATwistJustInsideTheToleranceAsNormal() {
+            double turns = Twist.turnsForMultiplier(4 * (1 - Twist.CLASS_TOLERANCE) + 0.01, 25);
+            assertThat(Twist.twistClass(turns, 25).reading()).isEqualTo("normal");
+            assertThat(Twist.twistClass(Twist.turnsForMultiplier(3.3, 25), 25).reading())
+                    .isEqualTo("soft");
+            assertThat(Twist.twistClass(Twist.turnsForMultiplier(4.7, 25), 25).reading())
+                    .isEqualTo("hard");
+        }
+
+        @Test
+        void readsTheMultiplierOfATexYarnOffTheDerivedCottonConstant() {
+            assertThat(Twist.twistMultiplier(20, Count.toTex(25, "ne"), "tex")).isEqualTo(4);
+            assertThat(Twist.metricTwistFactor(1000, 25, "nm")).isEqualTo(200);
         }
     }
 }
