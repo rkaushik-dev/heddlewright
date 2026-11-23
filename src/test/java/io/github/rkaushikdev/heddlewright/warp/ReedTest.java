@@ -198,4 +198,74 @@ class ReedTest {
             assertThat(err.detail().get("over")).isEqualTo(Json.of(1));
         }
     }
+
+    @Nested
+    class ReedCounts {
+
+        @Test
+        void readsAStockportCountAsTheDentsInTwoInches() {
+            assertThat(Reed.ReedCount.STOCKPORT.dentsPerInch(24)).isEqualTo(12);
+            assertThat(Reed.ReedCount.STOCKPORT.count(12)).isEqualTo(24);
+        }
+
+        @Test
+        void readsAMetricCountAsTheDentsInTenCentimetres() {
+            assertThat(Reed.ReedCount.METRIC.dentsPerInch(47)).isEqualTo(11.938);
+            assertThat(Reed.ReedCount.METRIC.count(12)).isEqualTo(47.24);
+            assertThat(Reed.ReedCount.PER_INCH.dentsPerInch(12)).isEqualTo(12);
+        }
+
+        @Test
+        void picksTheNearestReedOffARackStampedInAnotherCount() {
+            assertThat(Reed.nearestReed(12, List.of(40, 47, 55), Reed.ReedCount.METRIC))
+                    .isEqualTo(new Reed.Nearest(47, -0.062));
+            assertThat(Reed.nearestReed(12.5, List.of(20, 24, 26), Reed.ReedCount.STOCKPORT))
+                    .isEqualTo(new Reed.Nearest(24, -0.5));
+        }
+
+        @Test
+        void refusesACountOfNothingOrARackWithNoStamp() {
+            assertThatThrownBy(() -> Reed.ReedCount.METRIC.dentsPerInch(0))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Reed.nearestReed(12, List.of(24), null))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+    }
+
+    @Nested
+    class SelvedgeDenting {
+
+        @Test
+        void putsTheHeavierSelvedgeDentsAtEachSideOfTheGround() {
+            assertThat(Reed.selvedgeDenting(20, List.of(2), 8, 4)).containsExactly(4, 4, 2, 2, 4, 4);
+        }
+
+        @Test
+        void endsTheRightSelvedgeOnItsShortDentSoItMirrorsTheLeft() {
+            assertThat(Reed.selvedgeDenting(22, List.of(3, 2), 6, 4)).containsExactly(4, 2, 3, 2, 3, 2, 2, 4);
+            assertThat(Reed.selvedgeDenting(22, List.of(3, 2), 6, 4).stream()
+                            .mapToInt(Integer::intValue)
+                            .sum())
+                    .isEqualTo(22);
+        }
+
+        @Test
+        void raisesNoShortDentWarningForASelvedgeDentedLikeItsFellow() {
+            assertThat(Reed.dentingWarnings(Reed.selvedgeDenting(20, List.of(2), 8, 4)))
+                    .isEmpty();
+        }
+
+        @Test
+        void sleysAnyDentingEndByEnd() {
+            assertThat(Reed.sley(List.of(4, 2, 4))).containsExactly(1, 1, 1, 1, 2, 2, 3, 3, 3, 3);
+            assertThat(Reed.sley(Reed.dentingPlan(5, List.of(3, 2)))).isEqualTo(Reed.sleyOrder(5, List.of(3, 2)));
+        }
+
+        @Test
+        void refusesSelvedgesThatLeaveNoGround() {
+            assertThatThrownBy(() -> Reed.selvedgeDenting(16, List.of(2), 8, 4)).isInstanceOf(CapacityException.class);
+            assertThatThrownBy(() -> Reed.selvedgeDenting(20, List.of(2), 8, 0))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+    }
 }
