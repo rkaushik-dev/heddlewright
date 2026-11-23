@@ -213,4 +213,59 @@ class WifTest {
             assertThat(Wif.declaresAndCarries(quiet, "TIEUP")).isFalse();
         }
     }
+
+    @Nested
+    class ReadColours {
+
+        private final String file = String.join(
+                "\n",
+                "[WIF]",
+                "Version=1.1",
+                "[COLOR PALETTE]",
+                "Entries=2",
+                "Range=0,999",
+                "[COLOR TABLE]",
+                "1=999,0,0",
+                "2=0,500,999",
+                "[WARP]",
+                "Threads=4",
+                "Color=2",
+                "[WARP COLORS]",
+                "1=1",
+                "[WEFT]",
+                "Threads=2",
+                "[WEFT COLORS]",
+                "1=2",
+                "2=1",
+                "");
+
+        @Test
+        void scalesThePaletteFromTheRangeTheFileWasWrittenIn() {
+            assertThat(Wif.readColours(file).palette()).containsExactly("#ff0000", "#0080ff");
+        }
+
+        @Test
+        void fillsAThreadWithNoColourOfItsOwnFromTheDefault() {
+            assertThat(Wif.readColours(file).warp()).containsExactly("#ff0000", "#0080ff", "#0080ff", "#0080ff");
+            assertThat(Wif.readColours(file).weft()).containsExactly("#0080ff", "#ff0000");
+        }
+
+        @Test
+        void readsNothingFromAFileWithNoColourTable() {
+            assertThat(Wif.readColours("[WIF]\nVersion=1.1\n"))
+                    .isEqualTo(new Wif.Colours(List.of(), List.of(), List.of()));
+        }
+
+        @Test
+        void refusesAThreadPointingPastThePaletteOrAColourThatIsNotThreeNumbers() {
+            assertThatThrownBy(() -> Wif.readColours(file.replace("2=1\n", "2=5\n")))
+                    .isInstanceOf(DraftException.class)
+                    .hasMessageContaining("weft thread 2");
+            assertThatThrownBy(() -> Wif.readColours(file.replace("1=999,0,0", "1=999,0")))
+                    .isInstanceOf(DraftException.class);
+            assertThatThrownBy(() -> Wif.readColours(file.replace("Color=2\n", "")))
+                    .isInstanceOf(DraftException.class)
+                    .hasMessageContaining("warp thread 2");
+        }
+    }
 }
