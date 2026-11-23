@@ -234,4 +234,83 @@ class ScheduleTest {
             assertThat(Schedule.assertRunComplete(SMALL)).isSameAs(SMALL);
         }
     }
+
+    @Nested
+    class WarpChanges {
+
+        private final Run sheeting = Schedule.createRun(Json.obj(
+                "order",
+                "SO-0",
+                "style",
+                "sheeting",
+                "metres",
+                50,
+                "picksPerCm",
+                20,
+                "priority",
+                1,
+                "requirements",
+                Registry.styleRequirements(Json.obj("widthCm", 250, "shafts", 4))));
+
+        private final double weaving = Schedule.runHoursOn(NARROW, SMALL);
+
+        private final double sheetingHours = Schedule.runHoursOn(WIDE, sheeting);
+
+        private final List<Run> runs = List.of(
+                sheeting, small("order", "SO-1"), small("order", "SO-2"), small("order", "SO-3", "style", "twill"));
+
+        private Placement placementOf(Plan plan, String order) {
+            return plan.placed().stream()
+                    .filter(entry -> entry.order().equals(order))
+                    .findFirst()
+                    .orElseThrow();
+        }
+
+        @Test
+        void costsNothingWhenNoChangeHoursAreGiven() {
+            Plan plan = Schedule.schedule(LOOMS, runs);
+            assertThat(plan.placed()).allMatch(entry -> entry.changeHours() == 0);
+            assertThat(placementOf(plan, "SO-2").loom()).isEqualTo("W1");
+            assertThat(placementOf(plan, "SO-3").loom()).isEqualTo("N1");
+        }
+
+        @Test
+        void keepsAStyleOnTheLoomAlreadyGaitedForIt() {
+            Placement second = placementOf(Schedule.schedule(LOOMS, runs, Schedule.EFFICIENCY, 0, 30), "SO-2");
+            assertThat(second.loom()).isEqualTo("N1");
+            assertThat(second.changeHours()).isEqualTo(0);
+            assertThat(second.fromHour()).isCloseTo(30 + weaving, within(0.001));
+        }
+
+        @Test
+        void chargesTheChangeToTheLoomThatTakesANewStyle() {
+            Plan plan = Schedule.schedule(LOOMS, runs, Schedule.EFFICIENCY, 0, 30);
+            Placement twill = placementOf(plan, "SO-3");
+            assertThat(twill.loom()).isEqualTo("W1");
+            assertThat(twill.changeHours()).isEqualTo(30);
+            assertThat(twill.fromHour()).isCloseTo(30 + sheetingHours, within(0.001));
+            assertThat(twill.toHour() - twill.fromHour()).isCloseTo(30 + twill.hours(), within(0.001));
+            assertThat(plan.finishesAt()).isCloseTo(twill.toHour(), within(0.001));
+        }
+
+        @Test
+        void countsAWarpChangeAsBusyTime() {
+            Plan plan = Schedule.schedule(LOOMS, runs, Schedule.EFFICIENCY, 0, 30);
+            Schedule.Load wide = Schedule.loomLoad(plan).stream()
+                    .filter(load -> load.loom().equals("W1"))
+                    .findFirst()
+                    .orElseThrow();
+            assertThat(wide.hours())
+                    .isCloseTo(
+                            30 + sheetingHours + 30 + placementOf(plan, "SO-3").hours(), within(0.001));
+        }
+
+        @Test
+        void readsTheChangeHoursFromTheRequestOptions() {
+            assertThat(Schedule.schedule(LOOMS, runs, Json.obj("changeHours", 30)))
+                    .isEqualTo(Schedule.schedule(LOOMS, runs, Schedule.EFFICIENCY, 0, 30));
+            assertThatThrownBy(() -> Schedule.schedule(LOOMS, runs, Json.obj("changeHours", -1)))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+    }
 }

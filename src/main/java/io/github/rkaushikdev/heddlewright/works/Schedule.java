@@ -14,10 +14,13 @@ import io.github.rkaushikdev.heddlewright.util.JsonObject;
 import io.github.rkaushikdev.heddlewright.util.Numeric;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalDouble;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Putting work on looms.
@@ -26,6 +29,11 @@ import java.util.OptionalDouble;
  * Beyond that the choice is a trade: the fastest loom finishes soonest but a wide loom running a
  * narrow cloth wastes reed all week, so the plan here fills the narrowest capable loom first and
  * only reaches for a wide one when nothing else will do.
+ *
+ * <p>A loom that changes style has to have its warp changed first, which takes it off weaving for
+ * hours. So when a plan is given the hours a warp change takes, each run goes on the loom where it
+ * can start weaving soonest counting the change, which keeps a style on the loom already set up for
+ * it rather than gaiting a second loom for the same cloth.
  */
 public final class Schedule {
 
@@ -46,8 +54,18 @@ public final class Schedule {
     public record Run(
             String order, String style, double metres, double picksPerCm, JsonObject requirements, double priority) {}
 
-    /** A run put on a loom, and the hours it occupies. */
-    public record Placement(String order, String style, String loom, double fromHour, double toHour, double hours) {}
+    /**
+     * A run put on a loom: the loom is taken from {@code fromHour}, spends {@code changeHours} changing
+     * the warp if the style is new to it, then weaves for {@code hours} until {@code toHour}.
+     */
+    public record Placement(
+            String order,
+            String style,
+            String loom,
+            double fromHour,
+            double toHour,
+            double hours,
+            double changeHours) {}
 
     /** A run no loom could take, and why. */
     public record Unplaced(String order, String reason) {}
@@ -108,79 +126,91 @@ public final class Schedule {
         return schedule(looms, runs, EFFICIENCY, 0);
     }
 
-    /** A plan from the {@code efficiency} and {@code startHour} a request's options give, if any. */
+    /**
+     * A plan from the {@code efficiency}, {@code startHour} and {@code changeHours} a request's
+     * options give, if any.
+     */
     public static Plan schedule(List<Loom> looms, List<Run> runs, Object options) {
         JsonObject record = Check.plainObject(options, "options");
         Json efficiency = record.get("efficiency");
         Json startHour = record.get("startHour");
+        Json changeHours = record.get("changeHours");
         return schedule(
                 looms,
                 runs,
                 efficiency.isMissing() ? EFFICIENCY : Check.number(efficiency, "efficiency"),
-                startHour.isMissing() ? 0 : Check.number(startHour, "startHour"));
+                startHour.isMissing() ? 0 : Check.number(startHour, "startHour"),
+                changeHours.isMissing() ? 0 : Check.number(changeHours, "changeHours"));
+    }
+
+    /** A plan in which a change of style costs a loom nothing. */
+    public static Plan schedule(List<Loom> looms, List<Run> runs, double efficiency, double startHour) {
+        return schedule(looms, runs, efficiency, startHour, 0);
     }
 
     /**
      * Build a plan. Runs are taken in priority order, highest first and then by order, and each goes
-     * on the capable loom that is free soonest, breaking a tie on the narrower loom so wide capacity
-     * is kept back for work that needs it.
+     * on the capable loom where it can start weaving soonest, a loom new to the style first spending
+     * {@code changeHours} on its warp. A tie goes to the narrower loom, so wide capacity is kept back
+     * for work that needs it.
      */
-    public static Plan schedule(List<Loom> looms, List<Run> runs, double efficiency, double startHour) {
+    public static Plan schedule(
+            List<Loom> looms, List<Run> runs, double efficiency, double startHour, double changeHours) {
         Check.array(looms, "looms", 1);
         Check.array(runs, "runs");
         Check.number(startHour, "startHour", Bounds.atLeast(0));
+        Check.number(changeHours, "changeHours", Bounds.atLeast(0));
         Map<String, Double> free = new LinkedHashMap<>();
         looms.forEach(loom -> free.put(loom.reference(), startHour));
+        Map<String, String> styleOn = new HashMap<>();
         List<Placement> placed = new ArrayList<>();
         List<Unplaced> unplaced = new ArrayList<>();
         List<Run> ordered = new ArrayList<>(runs);
         ordered.sort(Comparator.comparingDouble(Run::priority).reversed().thenComparing(Run::order, Collation.ORDER));
         for (Run run : ordered) {
-            List<Loom> able = candidates(looms, run);
-            if (able.isEmpty()) {
+            ToDoubleFunction<Loom> change = loom -> run.style().equals(styleOn.get(loom.reference())) ? 0 : changeHours;
+            Optional<Loom> best = candidates(looms, run).stream()
+                    .min(Comparator.comparingDouble(
+                                    (Loom loom) -> free.get(loom.reference()) + change.applyAsDouble(loom))
+                            .thenComparingDouble(Loom::reedWidthCm));
+            if (best.isEmpty()) {
                 unplaced.add(new Unplaced(run.order(), "no loom on the floor can weave it"));
                 continue;
             }
-            Loom chosen = null;
-            for (Loom loom : able) {
-                if (chosen == null) {
-                    chosen = loom;
-                    continue;
-                }
-                double freeAt = free.get(loom.reference());
-                double bestFree = free.get(chosen.reference());
-                if (freeAt < bestFree || (freeAt == bestFree && loom.reedWidthCm() < chosen.reedWidthCm())) {
-                    chosen = loom;
-                }
-            }
-            double hours = runHoursOn(chosen, run, efficiency);
+            Loom chosen = best.get();
             double from = free.get(chosen.reference());
+            double setUp = change.applyAsDouble(chosen);
+            double hours = runHoursOn(chosen, run, efficiency);
             placed.add(new Placement(
                     run.order(),
                     run.style(),
                     chosen.reference(),
                     Numeric.roundTo(from, 3),
-                    Numeric.roundTo(from + hours, 3),
-                    hours));
-            free.put(chosen.reference(), from + hours);
+                    Numeric.roundTo(from + setUp + hours, 3),
+                    hours,
+                    setUp));
+            free.put(chosen.reference(), from + setUp + hours);
+            styleOn.put(chosen.reference(), run.style());
         }
         placed.sort(Comparator.comparingDouble(Placement::fromHour).thenComparing(Placement::loom, Collation.ORDER));
-        double finishesAt = startHour;
-        for (Placement entry : placed) {
-            finishesAt = Math.max(finishesAt, entry.toHour());
-        }
+        double finishesAt = placed.stream().mapToDouble(Placement::toHour).max().orElse(startHour);
         Map<String, Object> loomFinish = new LinkedHashMap<>();
         free.forEach((reference, hour) -> loomFinish.put(reference, Numeric.roundTo(hour, 3)));
         return new Plan(placed, unplaced, Numeric.roundTo(finishesAt, 3), (JsonObject) Json.of(loomFinish));
     }
 
-    /** How busy each loom is over the plan, as a share of the whole span, busiest first. */
+    /**
+     * How busy each loom is over the plan, as a share of the whole span, busiest first. A warp change
+     * keeps a loom as busy as weaving does.
+     */
     public static List<Load> loomLoad(Plan plan) {
         Check.object(plan, "plan");
         double span = plan.finishesAt();
         Map<String, Double> busy = new LinkedHashMap<>();
         for (Placement entry : plan.placed()) {
-            busy.put(entry.loom(), Numeric.roundTo(busy.getOrDefault(entry.loom(), 0.0) + entry.hours(), 3));
+            busy.put(
+                    entry.loom(),
+                    Numeric.roundTo(busy.getOrDefault(entry.loom(), 0.0) + entry.hours() + entry.changeHours(), 3));
         }
         List<Load> out = new ArrayList<>();
         busy.forEach((loom, hours) -> out.add(new Load(loom, hours, span == 0 ? 0 : Numeric.roundTo(hours / span, 4))));
