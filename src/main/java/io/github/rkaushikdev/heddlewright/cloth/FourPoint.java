@@ -36,7 +36,8 @@ import java.util.Map;
  * <p>Some buyers still grade on the older ten-point system, and a roll is scored on whichever one the
  * contract names. Ten-point bands a defect at one inch, five and ten, scoring one, three, five and ten,
  * with holes banded the same way; a yard carries ten points at most, and a roll is first quality while
- * its points do not outnumber its yards.
+ * its points do not outnumber its yards. A defect running across the cloth, weft way, is banded at one
+ * inch, five and half the width instead, so only a fault crossing more than half the piece scores ten.
  */
 public final class FourPoint {
 
@@ -76,6 +77,11 @@ public final class FourPoint {
                 10,
                 1);
 
+        /** The ten-point bands for a defect across the cloth, up to half its width. */
+        private static List<Band> acrossBands(double widthInches) {
+            return List.of(new Band(1, 1), new Band(5, 3), new Band(Math.max(5, widthInches / 2), 5));
+        }
+
         private final List<Band> lengths;
         private final List<Band> holes;
         private final int most;
@@ -88,9 +94,24 @@ public final class FourPoint {
             this.acceptance = acceptance;
         }
 
-        /** The points a defect of this kind and length scores. */
+        /** The points a defect of this kind and length scores, running warp way. */
         public int points(Kind kind, double inches) {
-            for (Band band : kind == Kind.HOLE ? holes : lengths) {
+            return banded(kind == Kind.HOLE ? holes : lengths, inches);
+        }
+
+        /**
+         * The points a defect scores running the way given in a cloth of this width. Only a ten-point
+         * length defect across the cloth reads the width; everything else is banded as it always is.
+         */
+        public int points(Kind kind, double inches, Direction direction, double widthInches) {
+            if (this == TEN_POINT && kind == Kind.LENGTH && direction == Direction.WEFT) {
+                return banded(acrossBands(Check.positiveNumber(widthInches, "widthInches")), inches);
+            }
+            return points(kind, inches);
+        }
+
+        private int banded(List<Band> bands, double inches) {
+            for (Band band : bands) {
                 if (inches <= band.upToInches()) {
                     return band.points();
                 }
@@ -111,6 +132,24 @@ public final class FourPoint {
         /** Read a scheme by its name, refusing anything else. */
         public static Scheme parse(Object text) {
             return Check.member(text, "scheme", values());
+        }
+
+        @Override
+        public String toString() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+    }
+
+    /** Which way a defect runs in the cloth. */
+    public enum Direction {
+        /** Along the warp, down the piece. */
+        WARP,
+        /** Along the weft, across the piece. */
+        WEFT;
+
+        /** Read a direction by its name, refusing anything else. */
+        public static Direction parse(Object text) {
+            return Check.member(text, "defect.direction", values());
         }
 
         @Override
@@ -168,7 +207,11 @@ public final class FourPoint {
         return defectPoints(defect, Scheme.FOUR_POINT);
     }
 
-    /** The points a single defect scores on the scheme given. */
+    /**
+     * The points a single defect scores on the scheme given. A defect may say which {@code direction}
+     * it runs, warp way unless it says otherwise; a weft-way defect on the ten-point system also
+     * needs the {@code widthInches} of the cloth.
+     */
     public static int defectPoints(Object defect, Scheme scheme) {
         JsonObject record = Check.plainObject(defect, "defect");
         Json given = record.get("kind");
@@ -181,7 +224,12 @@ public final class FourPoint {
             int first = wholeYard(from.isNullish() ? Json.of(1) : from, "defect.yard");
             return (runEnd(record.get("through"), "defect.through", first, 0) - first + 1) * scheme.most();
         }
-        return scheme.points(kind, Check.positiveNumber(record.get("inches"), "defect.inches"));
+        double inches = Check.positiveNumber(record.get("inches"), "defect.inches");
+        Json way = record.get("direction");
+        Direction direction = way.isNullish() ? Direction.WARP : Direction.parse(way);
+        Json width = record.get("widthInches");
+        return scheme.points(
+                kind, inches, direction, width.isNullish() ? Double.NaN : Check.number(width, "defect.widthInches"));
     }
 
     /** Score a roll with the usual four-point cap. */
@@ -226,7 +274,10 @@ public final class FourPoint {
             int yard = yardOf(at.isNullish() ? Json.of(1) : at, "defects[" + index + "].yard", yards, index);
             Json through = fieldOf(defect, "through");
             if (through.isNullish()) {
-                perYard.merge(yard, defectPoints(defect, scheme), Integer::sum);
+                perYard.merge(
+                        yard,
+                        defectPoints(Check.plainObject(defect, "defect").with("widthInches", widthInches), scheme),
+                        Integer::sum);
                 continue;
             }
             // Read for its refusals alone: a hole cannot run, and a run cannot end before it starts.

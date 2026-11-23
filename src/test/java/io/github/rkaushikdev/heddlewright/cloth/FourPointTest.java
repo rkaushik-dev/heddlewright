@@ -365,4 +365,67 @@ class FourPointTest {
             assertThat(FourPoint.Scheme.TEN_POINT).hasToString("ten_point");
         }
     }
+
+    @Nested
+    class WeftWay {
+
+        private int tenPoints(Object... fields) {
+            return FourPoint.defectPoints(Json.obj(fields), FourPoint.Scheme.TEN_POINT);
+        }
+
+        @Test
+        void bandsADefectAcrossTheClothAtHalfItsWidthOnTenPoint() {
+            assertThat(tenPoints("inches", 12, "direction", "weft", "widthInches", 60))
+                    .isEqualTo(5);
+            assertThat(tenPoints("inches", 30, "direction", "weft", "widthInches", 60))
+                    .isEqualTo(5);
+            assertThat(tenPoints("inches", 31, "direction", "weft", "widthInches", 60))
+                    .isEqualTo(10);
+            assertThat(tenPoints("inches", 12, "direction", "warp", "widthInches", 60))
+                    .isEqualTo(10);
+            assertThat(tenPoints("inches", 4, "direction", "weft", "widthInches", 60))
+                    .isEqualTo(3);
+        }
+
+        @Test
+        void neverLetsTheHalfWidthBandFallBelowFiveInches() {
+            assertThat(tenPoints("inches", 5, "direction", "weft", "widthInches", 6))
+                    .isEqualTo(3);
+            assertThat(tenPoints("inches", 5.5, "direction", "weft", "widthInches", 6))
+                    .isEqualTo(10);
+        }
+
+        @Test
+        void leavesTheFourPointBandsAloneWhicheverWayADefectRuns() {
+            assertThat(points("inches", 12, "direction", "weft", "widthInches", 60))
+                    .isEqualTo(4);
+            assertThat(FourPoint.Scheme.FOUR_POINT.points(FourPoint.Kind.LENGTH, 5, FourPoint.Direction.WEFT, 60))
+                    .isEqualTo(2);
+            assertThat(FourPoint.Scheme.TEN_POINT.points(FourPoint.Kind.HOLE, 12, FourPoint.Direction.WEFT, 60))
+                    .isEqualTo(10);
+        }
+
+        @Test
+        void takesTheWidthFromTheRollWhenItScoresOne() {
+            FourPoint.Score score = FourPoint.scoreRoll(Json.obj(
+                    "scheme",
+                    "ten_point",
+                    "widthInches",
+                    60,
+                    "yards",
+                    20,
+                    "defects",
+                    List.of(Json.obj("yard", 3, "inches", 20, "direction", "weft"))));
+            assertThat(score.totalPoints()).isEqualTo(5);
+        }
+
+        @Test
+        void refusesAWeftWayTenPointDefectWithNoWidthOrADirectionItDoesNotKnow() {
+            assertThatThrownBy(() -> tenPoints("inches", 12, "direction", "weft"))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> points("inches", 12, "direction", "sideways"))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThat(FourPoint.Direction.WEFT).hasToString("weft");
+        }
+    }
 }

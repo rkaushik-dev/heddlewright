@@ -252,4 +252,41 @@ class InspectionTest {
             assertThat(printed.dominantOrigin()).contains(Inspection.Origin.LOOM);
         }
     }
+
+    @Nested
+    class Direction {
+
+        @Test
+        void knowsWhichWayEachFaultUsuallyRuns() {
+            assertThat(Inspection.faultByCode("broken_pick").direction()).isEqualTo(FourPoint.Direction.WEFT);
+            assertThat(Inspection.faultByCode("missing_end").direction()).isEqualTo(FourPoint.Direction.WARP);
+            assertThat(Inspection.listFaults())
+                    .filteredOn(fault -> fault.origin() == Origin.WEFT)
+                    .allMatch(fault -> fault.direction() == FourPoint.Direction.WEFT);
+        }
+
+        @Test
+        void booksTheDirectionWithTheDefect() {
+            Defect pick = Inspection.recordDefect(Json.obj("code", "broken_pick", "yard", 2, "inches", 12));
+            assertThat(pick.direction()).isEqualTo(FourPoint.Direction.WEFT);
+            assertThat(Json.of(pick).get("direction")).isEqualTo(Json.of("weft"));
+        }
+
+        @Test
+        void letsTheGraderSayAFloatRanAcross() {
+            Defect across =
+                    Inspection.recordDefect(Json.obj("code", "float", "yard", 2, "inches", 2, "direction", "weft"));
+            assertThat(across.direction()).isEqualTo(FourPoint.Direction.WEFT);
+            assertThatThrownBy(() -> Inspection.recordDefect(
+                            Json.obj("code", "float", "yard", 2, "inches", 2, "direction", "up")))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void keepsTheFourPointScoreTheSameWhicheverWayAFaultRuns() {
+            assertThat(Inspection.recordDefect(Json.obj("code", "broken_pick", "yard", 2, "inches", 12))
+                            .points())
+                    .isEqualTo(4);
+        }
+    }
 }

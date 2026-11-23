@@ -1,5 +1,6 @@
 package io.github.rkaushikdev.heddlewright.cloth;
 
+import io.github.rkaushikdev.heddlewright.cloth.FourPoint.Direction;
 import io.github.rkaushikdev.heddlewright.cloth.FourPoint.Kind;
 import io.github.rkaushikdev.heddlewright.util.Bounds;
 import io.github.rkaushikdev.heddlewright.util.Check;
@@ -24,6 +25,11 @@ import java.util.OptionalDouble;
  * <p>A grader books a fault against a name, and the name carries where the fault comes from. That is
  * what turns a roll of points into an instruction: a sheet full of weft bars is a weft supply
  * problem, a sheet full of reed marks is a loom problem, and the two go to different people.
+ *
+ * <p>The name also says which way the fault runs. A broken pick lies across the piece and a missing
+ * end down it, and the ten-point system bands the two differently, so the direction is booked with
+ * the defect. A grader may book a fault that can run either way, such as a float or a slub, the way
+ * it actually ran.
  */
 public final class Inspection {
 
@@ -54,8 +60,8 @@ public final class Inspection {
     /** The origins, warp first. */
     public static final List<Origin> FAULT_ORIGINS = List.of(Origin.values());
 
-    /** A fault in the catalogue. */
-    public record Fault(String code, String name, Origin origin, Kind kind) {}
+    /** A fault in the catalogue, with the way it usually runs. */
+    public record Fault(String code, String name, Origin origin, Kind kind, Direction direction) {}
 
     /**
      * A booked defect: the catalogue entry, where and how long it is, the yard a running fault carries
@@ -66,6 +72,7 @@ public final class Inspection {
             String name,
             Origin origin,
             Kind kind,
+            Direction direction,
             double inches,
             double yard,
             OptionalDouble through,
@@ -104,22 +111,22 @@ public final class Inspection {
     }
 
     private static final Map<String, Fault> FAULTS = register(
-            new Fault("broken_pick", "broken pick", Origin.WEFT, Kind.LENGTH),
-            new Fault("double_pick", "double pick", Origin.LOOM, Kind.LENGTH),
-            new Fault("missing_end", "missing end", Origin.WARP, Kind.LENGTH),
-            new Fault("float", "float", Origin.LOOM, Kind.LENGTH),
-            new Fault("reed_mark", "reed mark", Origin.LOOM, Kind.LENGTH),
-            new Fault("starting_mark", "starting mark", Origin.LOOM, Kind.LENGTH),
-            new Fault("weft_bar", "weft bar", Origin.WEFT, Kind.LENGTH),
-            new Fault("temple_mark", "temple mark", Origin.LOOM, Kind.LENGTH),
-            new Fault("tight_end", "tight end", Origin.WARP, Kind.LENGTH),
-            new Fault("slack_end", "slack end", Origin.WARP, Kind.LENGTH),
-            new Fault("slub", "slub", Origin.YARN, Kind.LENGTH),
-            new Fault("knot", "knot", Origin.YARN, Kind.LENGTH),
-            new Fault("oil_stain", "oil stain", Origin.HANDLING, Kind.LENGTH),
-            new Fault("hole", "hole", Origin.LOOM, Kind.HOLE),
-            new Fault("selvedge_fault", "selvedge fault", Origin.LOOM, Kind.LENGTH),
-            new Fault("thin_place", "thin place", Origin.WEFT, Kind.LENGTH));
+            new Fault("broken_pick", "broken pick", Origin.WEFT, Kind.LENGTH, Direction.WEFT),
+            new Fault("double_pick", "double pick", Origin.LOOM, Kind.LENGTH, Direction.WEFT),
+            new Fault("missing_end", "missing end", Origin.WARP, Kind.LENGTH, Direction.WARP),
+            new Fault("float", "float", Origin.LOOM, Kind.LENGTH, Direction.WARP),
+            new Fault("reed_mark", "reed mark", Origin.LOOM, Kind.LENGTH, Direction.WARP),
+            new Fault("starting_mark", "starting mark", Origin.LOOM, Kind.LENGTH, Direction.WEFT),
+            new Fault("weft_bar", "weft bar", Origin.WEFT, Kind.LENGTH, Direction.WEFT),
+            new Fault("temple_mark", "temple mark", Origin.LOOM, Kind.LENGTH, Direction.WARP),
+            new Fault("tight_end", "tight end", Origin.WARP, Kind.LENGTH, Direction.WARP),
+            new Fault("slack_end", "slack end", Origin.WARP, Kind.LENGTH, Direction.WARP),
+            new Fault("slub", "slub", Origin.YARN, Kind.LENGTH, Direction.WARP),
+            new Fault("knot", "knot", Origin.YARN, Kind.LENGTH, Direction.WARP),
+            new Fault("oil_stain", "oil stain", Origin.HANDLING, Kind.LENGTH, Direction.WARP),
+            new Fault("hole", "hole", Origin.LOOM, Kind.HOLE, Direction.WARP),
+            new Fault("selvedge_fault", "selvedge fault", Origin.LOOM, Kind.LENGTH, Direction.WARP),
+            new Fault("thin_place", "thin place", Origin.WEFT, Kind.LENGTH, Direction.WEFT));
 
     private static Map<String, Fault> register(Fault... faults) {
         Map<String, Fault> out = new LinkedHashMap<>();
@@ -168,6 +175,8 @@ public final class Inspection {
         double yard = Check.number(record.get("yard"), "entry.yard", Bounds.atLeast(0.0001));
         Json note = record.get("note");
         Json runs = record.get("through");
+        Json way = record.get("direction");
+        Direction direction = way.isNullish() ? fault.direction() : Direction.parse(way);
         OptionalDouble through = runs.isNullish()
                 ? OptionalDouble.empty()
                 : OptionalDouble.of(Check.number(runs, "entry.through", Bounds.atLeast(yard)));
@@ -177,12 +186,13 @@ public final class Inspection {
         int points = FourPoint.defectPoints(
                 through.isPresent()
                         ? Json.obj("kind", fault.kind(), "yard", yard, "through", through.getAsDouble())
-                        : Json.obj("kind", fault.kind(), "inches", inches));
+                        : Json.obj("kind", fault.kind(), "inches", inches, "direction", direction));
         return new Defect(
                 fault.code(),
                 fault.name(),
                 fault.origin(),
                 fault.kind(),
+                direction,
                 inches,
                 yard,
                 through,

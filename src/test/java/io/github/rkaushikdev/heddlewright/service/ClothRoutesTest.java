@@ -169,7 +169,7 @@ class ClothRoutesTest {
         @Test
         void gradesOnTheTenPointSystemWhenTheQueryNamesIt() {
             book(
-                    Json.obj("code", "weft_bar", "yard", 3, "inches", 12),
+                    Json.obj("code", "tight_end", "yard", 3, "inches", 12),
                     Json.obj("code", "slub", "yard", 8, "inches", 4));
             Json grading =
                     get("/pieces/P1001/grade", Map.of("scheme", "ten_point")).body();
@@ -178,6 +178,17 @@ class ClothRoutesTest {
             assertThat(grading.get("grade").get("points")).isEqualTo(Json.of(0.13));
             assertThat(get("/pieces/P1001/grade", Map.of("scheme", "six_point")).status())
                     .isEqualTo(400);
+        }
+
+        @Test
+        void bandsABookedBrokenPickByTheWidthOfThePieceOnTenPoint() {
+            book(
+                    Json.obj("code", "broken_pick", "yard", 3, "inches", 20),
+                    Json.obj("code", "missing_end", "yard", 9, "inches", 20));
+            Json score = get("/pieces/P1001/grade", Map.of("scheme", "ten_point"))
+                    .body()
+                    .get("score");
+            assertThat(score.get("totalPoints")).isEqualTo(Json.of(5 + 10));
         }
 
         @Test
