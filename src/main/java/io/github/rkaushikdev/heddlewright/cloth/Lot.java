@@ -20,6 +20,11 @@ import java.util.Map;
  * the join shows it. So pieces are gathered into lots by how far apart their shade readings are, and
  * a lot is only usable if every piece in it sits inside the tolerance of every other, not merely of
  * the first one. That is the part a simple grouping gets wrong.
+ *
+ * <p>How far apart two readings are can be measured two ways. The straight distance treats the three
+ * axes alike. CMC(l:c) weights each axis by how much the eye forgives at that lightness, chroma and
+ * hue, and is the figure a dyehouse passes or fails a shade on; 2:1 is the usual ratio for
+ * acceptability and 1:1 for perceptibility.
  */
 public final class Lot {
 
@@ -48,6 +53,27 @@ public final class Lot {
         }
     }
 
+    /** How the distance between two readings is measured. */
+    public sealed interface Difference permits Straight, Cmc {}
+
+    /** The straight distance in colour space, every axis counting alike. */
+    public record Straight() implements Difference {}
+
+    /** CMC(l:c), with its lightness and chroma weights. */
+    public record Cmc(double lightness, double chroma) implements Difference {
+        /** Refuses a weight of nothing. */
+        public Cmc {
+            Check.positiveNumber(lightness, "cmc.lightness");
+            Check.positiveNumber(chroma, "cmc.chroma");
+        }
+    }
+
+    /** The straight distance. */
+    public static final Difference STRAIGHT = new Straight();
+
+    /** CMC 2:1, the ratio a shade is accepted or rejected on. */
+    public static final Difference CMC_ACCEPTABILITY = new Cmc(2, 1);
+
     private Lot() {}
 
     /** Book a shade reading against a piece, on the three colour axes. */
@@ -62,33 +88,90 @@ public final class Lot {
 
     /** How far apart two readings are, as a straight distance in colour space. */
     public static double shadeDistance(Reading left, Reading right) {
-        double dl = left.lightness() - right.lightness();
-        double da = left.red() - right.red();
-        double db = left.yellow() - right.yellow();
-        return Numeric.roundTo(Math.sqrt(dl * dl + da * da + db * db), 4);
+        return shadeDistance(left, right, STRAIGHT);
+    }
+
+    /**
+     * How far apart two readings are, measured the way given. CMC weights its tolerances from the
+     * standard's own shade, so it reads differently depending on which piece is the standard; here
+     * neither piece is, and the larger of the two readings is taken so a lot never holds on the kinder
+     * one.
+     */
+    public static double shadeDistance(Reading left, Reading right, Difference difference) {
+        return switch (difference) {
+            case Straight straight -> {
+                double dl = left.lightness() - right.lightness();
+                double da = left.red() - right.red();
+                double db = left.yellow() - right.yellow();
+                yield Numeric.roundTo(Math.sqrt(dl * dl + da * da + db * db), 4);
+            }
+            case Cmc cmc -> Numeric.roundTo(Math.max(cmc(left, right, cmc), cmc(right, left, cmc)), 4);
+        };
+    }
+
+    /** CMC(l:c) of a batch against a standard. */
+    static double cmc(Reading standard, Reading batch, Cmc weights) {
+        double chroma = Math.hypot(standard.red(), standard.yellow());
+        double dl = standard.lightness() - batch.lightness();
+        double dc = chroma - Math.hypot(batch.red(), batch.yellow());
+        double da = standard.red() - batch.red();
+        double db = standard.yellow() - batch.yellow();
+        double dh = Math.sqrt(Math.max(0, da * da + db * db - dc * dc));
+        double hue = Math.toDegrees(Math.atan2(standard.yellow(), standard.red()));
+        hue = hue < 0 ? hue + 360 : hue;
+        double sl = standard.lightness() < 16
+                ? 0.511
+                : (0.040975 * standard.lightness()) / (1 + 0.01765 * standard.lightness());
+        double sc = (0.0638 * chroma) / (1 + 0.0131 * chroma) + 0.638;
+        double f = Math.sqrt(Math.pow(chroma, 4) / (Math.pow(chroma, 4) + 1900));
+        double t = hue >= 164 && hue <= 345
+                ? 0.56 + Math.abs(0.2 * Math.cos(Math.toRadians(hue + 168)))
+                : 0.36 + Math.abs(0.4 * Math.cos(Math.toRadians(hue + 35)));
+        double sh = sc * (f * t + 1 - f);
+        double l = dl / (weights.lightness() * sl);
+        double c = dc / (weights.chroma() * sc);
+        double h = dh / sh;
+        return Math.sqrt(l * l + c * c + h * h);
+    }
+
+    /** Every pair of readings with the distance between them, in the order they were named. */
+    private static List<Pair> pairs(List<Reading> readings, Difference difference) {
+        Check.array(readings, "readings", 1);
+        List<Pair> out = new ArrayList<>();
+        for (int i = 0; i < readings.size(); i += 1) {
+            for (int j = i + 1; j < readings.size(); j += 1) {
+                out.add(new Pair(
+                        readings.get(i).reference(),
+                        readings.get(j).reference(),
+                        shadeDistance(readings.get(i), readings.get(j), difference)));
+            }
+        }
+        return out;
     }
 
     /** Every pair in a lot that sits further apart than the tolerance, widest first. */
     public static List<Pair> outliers(List<Reading> readings, double tolerance) {
-        Check.array(readings, "readings", 1);
+        return outliers(readings, tolerance, STRAIGHT);
+    }
+
+    /** Every pair further apart than the tolerance on the difference given, widest first. */
+    public static List<Pair> outliers(List<Reading> readings, double tolerance, Difference difference) {
         Check.positiveNumber(tolerance, "tolerance");
-        List<Pair> found = new ArrayList<>();
-        for (int i = 0; i < readings.size(); i += 1) {
-            for (int j = i + 1; j < readings.size(); j += 1) {
-                double distance = shadeDistance(readings.get(i), readings.get(j));
-                if (distance > tolerance) {
-                    found.add(new Pair(
-                            readings.get(i).reference(), readings.get(j).reference(), distance));
-                }
-            }
-        }
+        List<Pair> found = new ArrayList<>(pairs(readings, difference).stream()
+                .filter(pair -> pair.distance() > tolerance)
+                .toList());
         found.sort(Comparator.comparingDouble(Pair::distance).reversed());
         return List.copyOf(found);
     }
 
     /** A lot holds together when no two pieces in it are further apart than the tolerance. */
     public static boolean lotHolds(List<Reading> readings, double tolerance) {
-        return outliers(readings, tolerance).isEmpty();
+        return lotHolds(readings, tolerance, STRAIGHT);
+    }
+
+    /** The same, on the difference given. */
+    public static boolean lotHolds(List<Reading> readings, double tolerance, Difference difference) {
+        return outliers(readings, tolerance, difference).isEmpty();
     }
 
     /**
@@ -97,12 +180,18 @@ public final class Lot {
      * time.
      */
     public static List<ShadeLot> buildLots(List<Reading> readings, double tolerance) {
+        return buildLots(readings, tolerance, STRAIGHT);
+    }
+
+    /** Gather readings into lots on the difference given. */
+    public static List<ShadeLot> buildLots(List<Reading> readings, double tolerance, Difference difference) {
         Check.array(readings, "readings", 1);
         Check.positiveNumber(tolerance, "tolerance");
         List<List<Reading>> lots = new ArrayList<>();
         for (Reading reading : readings) {
             List<Reading> home = lots.stream()
-                    .filter(lot -> lot.stream().allMatch(member -> shadeDistance(member, reading) <= tolerance))
+                    .filter(lot ->
+                            lot.stream().allMatch(member -> shadeDistance(member, reading, difference) <= tolerance))
                     .findFirst()
                     .orElse(null);
             if (home == null) {
@@ -118,7 +207,7 @@ public final class Lot {
                     index + 1,
                     members.stream().map(Reading::reference).toList(),
                     lotCentre(members),
-                    lotSpread(members)));
+                    lotSpread(members, difference)));
         }
         return List.copyOf(out);
     }
@@ -134,19 +223,25 @@ public final class Lot {
 
     /** The widest gap inside a lot, which is what a customer would see. */
     public static double lotSpread(List<Reading> readings) {
-        Check.array(readings, "readings", 1);
-        double widest = 0;
-        for (int i = 0; i < readings.size(); i += 1) {
-            for (int j = i + 1; j < readings.size(); j += 1) {
-                widest = Math.max(widest, shadeDistance(readings.get(i), readings.get(j)));
-            }
-        }
-        return Numeric.roundTo(widest, 4);
+        return lotSpread(readings, STRAIGHT);
+    }
+
+    /** The widest gap inside a lot on the difference given. */
+    public static double lotSpread(List<Reading> readings, Difference difference) {
+        return pairs(readings, difference).stream()
+                .mapToDouble(Pair::distance)
+                .max()
+                .orElse(0);
     }
 
     /** Refuse a lot that would not hold together. */
     public static List<Reading> assertLotHolds(List<Reading> readings, double tolerance) {
-        List<Pair> found = outliers(readings, tolerance);
+        return assertLotHolds(readings, tolerance, STRAIGHT);
+    }
+
+    /** Refuse a lot that would not hold together on the difference given. */
+    public static List<Reading> assertLotHolds(List<Reading> readings, double tolerance, Difference difference) {
+        List<Pair> found = outliers(readings, tolerance, difference);
         if (!found.isEmpty()) {
             throw new ConflictException(
                     "those pieces are not one shade lot", Json.obj("pairs", found.size(), "widest", found.get(0)));
@@ -167,7 +262,12 @@ public final class Lot {
 
     /** How many lots a delivery would need at a given tolerance. */
     public static int lotCount(List<Reading> readings, double tolerance) {
-        return buildLots(readings, tolerance).size();
+        return lotCount(readings, tolerance, STRAIGHT);
+    }
+
+    /** How many lots a delivery would need at a tolerance on the difference given. */
+    public static int lotCount(List<Reading> readings, double tolerance, Difference difference) {
+        return buildLots(readings, tolerance, difference).size();
     }
 
     /**

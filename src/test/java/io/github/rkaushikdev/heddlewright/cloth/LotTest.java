@@ -191,4 +191,81 @@ class LotTest {
                     .containsExactly(new Lot.DyeLot("unrecorded", List.of("P1")));
         }
     }
+
+    @Nested
+    class CmcDifference {
+
+        @Test
+        void forgivesLightnessByTheLightnessWeight() {
+            Reading light = shade("L1", 60, 0, 0);
+            Reading lighter = shade("L2", 61, 0, 0);
+            double sl = (0.040975 * 60) / (1 + 0.01765 * 60);
+            assertThat(Lot.shadeDistance(light, lighter, Lot.CMC_ACCEPTABILITY))
+                    .isCloseTo(1 / (2 * sl), within(0.00005));
+            assertThat(Lot.shadeDistance(light, lighter, new Lot.Cmc(1, 1)))
+                    .isCloseTo(2 * Lot.shadeDistance(light, lighter, Lot.CMC_ACCEPTABILITY), within(0.0002));
+        }
+
+        @Test
+        void holdsTheLightnessWeightFixedBelowSixteen() {
+            assertThat(Lot.shadeDistance(shade("D1", 10, 0, 0), shade("D2", 11, 0, 0), Lot.CMC_ACCEPTABILITY))
+                    .isEqualTo(0.9785);
+        }
+
+        @Test
+        void weighsHueDifferentlyEitherSideOfTheBlueBand() {
+            assertThat(Lot.shadeDistance(shade("R1", 50, 30, 20), shade("R2", 50, 32, 18), Lot.CMC_ACCEPTABILITY))
+                    .isEqualTo(2.4902);
+            assertThat(Lot.shadeDistance(shade("B1", 50, -20, -30), shade("B2", 50, -22, -28), Lot.CMC_ACCEPTABILITY))
+                    .isEqualTo(1.8162);
+        }
+
+        @Test
+        void takesTheHarsherReadingWhicheverPieceIsNamedFirst() {
+            Reading red = shade("R1", 50, 30, 20);
+            Reading other = shade("R2", 50, 32, 18);
+            assertThat(Lot.shadeDistance(red, other, Lot.CMC_ACCEPTABILITY))
+                    .isEqualTo(Lot.shadeDistance(other, red, Lot.CMC_ACCEPTABILITY));
+            assertThat(Lot.shadeDistance(red, other, Lot.CMC_ACCEPTABILITY))
+                    .isGreaterThanOrEqualTo(Lot.cmc(red, other, new Lot.Cmc(2, 1)) - 0.00005)
+                    .isGreaterThanOrEqualTo(Lot.cmc(other, red, new Lot.Cmc(2, 1)) - 0.00005);
+        }
+
+        @Test
+        void keepsInOneLotAPairTheStraightDistanceWouldSplit() {
+            Reading first = shade("P1", 60, 0, 0);
+            Reading second = shade("P2", 61.2, 0, 0);
+            assertThat(Lot.lotCount(List.of(first, second), 1)).isEqualTo(2);
+            assertThat(Lot.lotCount(List.of(first, second), 1, Lot.CMC_ACCEPTABILITY))
+                    .isEqualTo(1);
+            assertThat(Lot.lotHolds(List.of(first, second), 1, Lot.CMC_ACCEPTABILITY))
+                    .isTrue();
+            assertThat(Lot.buildLots(List.of(first, second), 1, Lot.CMC_ACCEPTABILITY)
+                            .get(0)
+                            .spread())
+                    .isEqualTo(Lot.shadeDistance(first, second, Lot.CMC_ACCEPTABILITY));
+        }
+
+        @Test
+        void stillRefusesALotThatFailsOnCmc() {
+            assertThat(Lot.outliers(List.of(A, B, C), 1, Lot.CMC_ACCEPTABILITY))
+                    .extracting(Lot.Pair::distance)
+                    .containsExactly(2.4771, Lot.shadeDistance(B, C, Lot.CMC_ACCEPTABILITY));
+            assertThatThrownBy(() -> Lot.assertLotHolds(List.of(A, C), 1, Lot.CMC_ACCEPTABILITY))
+                    .isInstanceOf(ConflictException.class);
+            assertThat(Lot.lotSpread(List.of(A, B), Lot.CMC_ACCEPTABILITY)).isEqualTo(0.2479);
+        }
+
+        @Test
+        void refusesAWeightOfNothing() {
+            assertThatThrownBy(() -> new Lot.Cmc(0, 1)).isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> new Lot.Cmc(2, -1)).isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void leavesTheStraightDistanceAsTheDefault() {
+            assertThat(Lot.shadeDistance(A, C)).isEqualTo(Lot.shadeDistance(A, C, Lot.STRAIGHT));
+            assertThat(Lot.shadeDistance(A, C, new Lot.Straight())).isEqualTo(4.2426);
+        }
+    }
 }
