@@ -17,6 +17,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
 
 /**
  * The loom register.
@@ -24,6 +26,11 @@ import java.util.Optional;
  * <p>A shed floor is a list of machines, each with a width, a shedding motion and a speed, and a
  * style can only be put on a loom that can actually hold it. Matching a style to a loom is a
  * capacity question with several parts, and this is where they are all asked at once.
+ *
+ * <p>Each part is one rule in a table, asked in turn, so a style that fails three ways is told all
+ * three. Some rules only bite on some looms: a shuttleless loom cuts its weft every pick, so it has
+ * no shuttle to strand and no need for the picks to pair, and it carries its colours on weft feeders
+ * rather than in boxes.
  */
 public final class Registry {
 
@@ -34,6 +41,90 @@ public final class Registry {
             references = List.copyOf(references);
         }
     }
+
+    /** One capacity rule: the code it reports, when a loom fails it, and what it says. */
+    private record Rule(
+            String code, BiPredicate<Loom, Requirements> fails, BiFunction<Loom, Requirements, Problem> says) {}
+
+    private static boolean jacquard(Loom loom) {
+        return loom.shedding() == Shedding.JACQUARD;
+    }
+
+    private static boolean shuttle(Loom loom) {
+        return loom.picking() == Picking.SHUTTLE;
+    }
+
+    private static Problem problem(String code, String message, double needed, double available) {
+        return new Problem(code, message, Json.obj("needed", needed, "available", available));
+    }
+
+    private static final List<Rule> RULES = List.of(
+            new Rule(
+                    "too_narrow",
+                    (loom, style) -> style.reedSpaceCm() > loom.reedWidthCm(),
+                    (loom, style) -> problem(
+                            "too_narrow",
+                            loom.reference() + " is " + Text.number(loom.reedWidthCm()) + " cm in the reed",
+                            style.reedSpaceCm(),
+                            loom.reedWidthCm())),
+            new Rule(
+                    "not_jacquard",
+                    (loom, style) -> style.hooks() > 0 && !jacquard(loom),
+                    (loom, style) -> new Problem(
+                            "not_jacquard",
+                            loom.reference() + " has no jacquard head",
+                            Json.obj("shedding", loom.shedding()))),
+            new Rule(
+                    "too_few_hooks",
+                    (loom, style) -> style.hooks() > loom.hooks() && jacquard(loom),
+                    (loom, style) -> problem(
+                            "too_few_hooks",
+                            loom.reference() + " carries " + loom.hooks() + " hooks",
+                            style.hooks(),
+                            loom.hooks())),
+            new Rule(
+                    "too_few_shafts",
+                    (loom, style) -> style.shafts() > loom.shafts() && !jacquard(loom),
+                    (loom, style) -> problem(
+                            "too_few_shafts",
+                            loom.reference() + " carries " + loom.shafts() + " shafts",
+                            style.shafts(),
+                            loom.shafts())),
+            new Rule(
+                    "too_few_boxes",
+                    (loom, style) -> style.weftColours() > loom.shuttleBoxes() && shuttle(loom),
+                    (loom, style) -> problem(
+                            "too_few_boxes",
+                            loom.reference() + " has " + loom.shuttleBoxes() + " shuttle boxes",
+                            style.weftColours(),
+                            loom.shuttleBoxes())),
+            new Rule(
+                    "too_few_feeders",
+                    (loom, style) -> style.weftColours() > loom.shuttleBoxes() && !shuttle(loom),
+                    (loom, style) -> problem(
+                            "too_few_feeders",
+                            loom.reference() + " has " + loom.shuttleBoxes() + " weft feeders",
+                            style.weftColours(),
+                            loom.shuttleBoxes())),
+            // Only a pattern can fail this one, and only on a shuttle loom. A style quoted as a colour
+            // count says nothing about the order, and a shuttleless loom has no shuttle to strand.
+            new Rule(
+                    "shuttle_strands",
+                    (loom, style) -> shuttle(loom)
+                            && loom.boxedAt() == Boxing.ONE
+                            && style.weftPattern()
+                                    .map(pattern -> !BoxMotion.oddRuns(pattern).isEmpty())
+                                    .orElse(false),
+                    (loom, style) -> new Problem(
+                            "shuttle_strands",
+                            loom.reference() + " is boxed at one end and the weft is not picked in pairs",
+                            Json.obj(
+                                    "runs",
+                                    BoxMotion.oddRuns(style.weftPattern().orElseThrow())))));
+
+    /** The codes of every capacity rule, in the order they are asked. */
+    public static final List<String> SHORTFALL_CODES =
+            RULES.stream().map(Rule::code).toList();
 
     private Registry() {}
 
@@ -97,11 +188,12 @@ public final class Registry {
         double widthCm = Check.positiveNumber(record.get("widthCm"), "widthCm");
         double shafts = Check.number(orZero(record.get("shafts")), "shafts", Bounds.atLeast(0));
         double hooks = Check.number(orZero(record.get("hooks")), "hooks", Bounds.atLeast(0));
+        double pullIn = Check.number(orZero(record.get("pullIn")), "pullIn", Bounds.between(0, 0.5));
         Json colours = record.get("weftColours");
         Json pattern = record.get("weftPattern");
         if (pattern.isMissing()) {
             int weftColours = Check.positiveInteger(colours.isNullish() ? Json.of(1) : colours, "weftColours");
-            return new Requirements(widthCm, shafts, hooks, weftColours, Optional.empty());
+            return new Requirements(widthCm, shafts, hooks, weftColours, Optional.empty(), pullIn);
         }
         List<Object> picks = Check.array(pattern, "weftPattern");
         List<String> named = BoxMotion.coloursIn(picks);
@@ -110,58 +202,19 @@ public final class Registry {
                     "weftColours does not match the pattern given",
                     Json.obj("weftColours", colours, "counted", named.size()));
         }
-        return new Requirements(widthCm, shafts, hooks, named.size(), Optional.of(BoxMotion.colours(picks)));
+        return new Requirements(widthCm, shafts, hooks, named.size(), Optional.of(BoxMotion.colours(picks)), pullIn);
     }
 
     private static Json orZero(Json value) {
         return value.isMissing() ? Json.of(0) : value;
     }
 
-    /** Every reason a loom cannot take a style, or an empty list when it can. */
+    /** Every reason a loom cannot take a style, in the order the rules are asked, or none when it can. */
     public static List<Problem> shortfalls(Loom loom, Requirements requirements) {
-        List<Problem> problems = new ArrayList<>();
-        boolean jacquard = loom.shedding() == Shedding.JACQUARD;
-        if (requirements.widthCm() > loom.reedWidthCm()) {
-            problems.add(new Problem(
-                    "too_narrow",
-                    loom.reference() + " is " + Text.number(loom.reedWidthCm()) + " cm in the reed",
-                    Json.obj("needed", requirements.widthCm(), "available", loom.reedWidthCm())));
-        }
-        if (requirements.hooks() > 0 && !jacquard) {
-            problems.add(new Problem(
-                    "not_jacquard", loom.reference() + " has no jacquard head", Json.obj("shedding", loom.shedding())));
-        }
-        if (requirements.hooks() > loom.hooks() && jacquard) {
-            problems.add(new Problem(
-                    "too_few_hooks",
-                    loom.reference() + " carries " + loom.hooks() + " hooks",
-                    Json.obj("needed", requirements.hooks(), "available", loom.hooks())));
-        }
-        if (requirements.shafts() > loom.shafts() && !jacquard) {
-            problems.add(new Problem(
-                    "too_few_shafts",
-                    loom.reference() + " carries " + loom.shafts() + " shafts",
-                    Json.obj("needed", requirements.shafts(), "available", loom.shafts())));
-        }
-        if (requirements.weftColours() > loom.shuttleBoxes()) {
-            problems.add(new Problem(
-                    "too_few_boxes",
-                    loom.reference() + " has " + loom.shuttleBoxes() + " shuttle boxes",
-                    Json.obj("needed", requirements.weftColours(), "available", loom.shuttleBoxes())));
-        }
-        // Only a pattern can fail this one. A style quoted as a colour count says nothing about the
-        // order, so there is nothing here to fail on.
-        if (requirements.weftPattern().isPresent() && loom.boxedAt() == Boxing.ONE) {
-            List<BoxMotion.WeftRun> odd =
-                    BoxMotion.oddRuns(requirements.weftPattern().get());
-            if (!odd.isEmpty()) {
-                problems.add(new Problem(
-                        "shuttle_strands",
-                        loom.reference() + " is boxed at one end and the weft is not picked in pairs",
-                        Json.obj("runs", odd)));
-            }
-        }
-        return List.copyOf(problems);
+        return RULES.stream()
+                .filter(rule -> rule.fails().test(loom, requirements))
+                .map(rule -> rule.says().apply(loom, requirements))
+                .toList();
     }
 
     /** Whether a loom can take a style at all. */

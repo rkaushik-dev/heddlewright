@@ -13,9 +13,18 @@ import java.util.Optional;
  *
  * <p>A figure the style does not state is NaN, which no comparison with a loom's capacity can
  * fail on, so an unstated need never rules a loom out.
+ *
+ * <p>The width is the cloth's. A cloth pulls in from the reed as it is woven, so the reed space a
+ * style needs is its width over one less its {@code pullIn}, and a style that gives no pull-in is
+ * taken to need no more reed than its own width.
  */
 public record Requirements(
-        double widthCm, double shafts, double hooks, double weftColours, Optional<List<String>> weftPattern) {
+        double widthCm,
+        double shafts,
+        double hooks,
+        double weftColours,
+        Optional<List<String>> weftPattern,
+        double pullIn) {
 
     /** Copies the pattern. */
     public Requirements {
@@ -40,7 +49,13 @@ public record Requirements(
                 figure(record, "weftColours"),
                 pattern.isMissing()
                         ? Optional.empty()
-                        : Optional.of(BoxMotion.colours(Check.array(pattern, "weftPattern"))));
+                        : Optional.of(BoxMotion.colours(Check.array(pattern, "weftPattern"))),
+                figure(record, "pullIn"));
+    }
+
+    /** The reed space the style needs, in centimetres: its width over one less its pull-in. */
+    public double reedSpaceCm() {
+        return Double.isNaN(pullIn) || pullIn == 0 ? widthCm : Temple.reedWidth(widthCm, pullIn);
     }
 
     private static double figure(JsonObject record, String field) {

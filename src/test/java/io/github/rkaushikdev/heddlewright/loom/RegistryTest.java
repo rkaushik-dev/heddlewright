@@ -308,4 +308,81 @@ class RegistryTest {
             assertThat(codes(Registry.shortfalls(DOBBY, wanted))).containsExactly("too_few_boxes");
         }
     }
+
+    @Nested
+    class TheRules {
+
+        private final Loom rapier = Registry.createLoom(Json.obj(
+                "reference",
+                "R1",
+                "shedding",
+                "dobby",
+                "picking",
+                "rapier",
+                "reedWidthCm",
+                190,
+                "shafts",
+                16,
+                "picksMinute",
+                450,
+                "shuttleBoxes",
+                8));
+
+        @Test
+        void asksForReedSpaceForThePullIn() {
+            Requirements wide = style("widthCm", 180, "shafts", 8, "pullIn", 0.06);
+            List<Problem> problems = Registry.shortfalls(DOBBY, wide);
+            assertThat(codes(problems)).containsExactly("too_narrow");
+            assertThat(problems.get(0).detail()).isEqualTo(Json.obj("needed", 191.49, "available", 190));
+            assertThat(wide.reedSpaceCm()).isEqualTo(191.49);
+            assertThat(Registry.canWeave(DOBBY, style("widthCm", 178, "shafts", 8, "pullIn", 0.06)))
+                    .isTrue();
+        }
+
+        @Test
+        void takesAStyleWithNoPullInAtItsOwnWidth() {
+            assertThat(style("widthCm", 150).reedSpaceCm()).isEqualTo(150);
+            assertThat(Requirements.fromRecord(Json.obj("widthCm", 150)).reedSpaceCm())
+                    .isEqualTo(150);
+            assertThat(Requirements.fromRecord(Json.obj("widthCm", 150, "pullIn", 0.04))
+                            .reedSpaceCm())
+                    .isEqualTo(156.25);
+        }
+
+        @Test
+        void refusesAPullInNoClothCouldHave() {
+            assertThatThrownBy(() -> style("widthCm", 150, "pullIn", 0.6)).isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void pairsNoPicksOnAShuttlelessLoom() {
+            Requirements single = style("widthCm", 100, "weftPattern", List.of("red", "blue", "blue", "blue"));
+            assertThat(Registry.canWeave(rapier, single)).isTrue();
+            assertThat(codes(Registry.shortfalls(DOBBY, single))).containsExactly("shuttle_strands");
+        }
+
+        @Test
+        void countsWeftFeedersRatherThanBoxesOnAShuttlelessLoom() {
+            List<Problem> problems = Registry.shortfalls(rapier, style("widthCm", 100, "weftColours", 9));
+            assertThat(codes(problems)).containsExactly("too_few_feeders");
+            assertThat(problems.get(0).message()).contains("8 weft feeders");
+            assertThat(codes(Registry.shortfalls(DOBBY, style("widthCm", 100, "weftColours", 9))))
+                    .containsExactly("too_few_boxes");
+        }
+
+        @Test
+        void asksEveryRuleInATableItCanName() {
+            assertThat(Registry.SHORTFALL_CODES)
+                    .containsExactly(
+                            "too_narrow",
+                            "not_jacquard",
+                            "too_few_hooks",
+                            "too_few_shafts",
+                            "too_few_boxes",
+                            "too_few_feeders",
+                            "shuttle_strands");
+            List<Problem> problems = Registry.shortfalls(TAPPET, style("widthCm", 200, "shafts", 12, "weftColours", 3));
+            assertThat(codes(problems)).containsExactly("too_narrow", "too_few_shafts", "too_few_boxes");
+        }
+    }
 }
