@@ -176,4 +176,47 @@ class TakeupTest {
             assertThat(Takeup.assertSettReachable(1780, 43, 2).teeth()).isGreaterThan(0);
         }
     }
+
+    @Nested
+    class OffTheLoom {
+
+        @Test
+        void closesThePicksUpAsTheClothRelaxes() {
+            assertThat(Takeup.offLoomPicks(24, 4)).isEqualTo(25);
+            assertThat(Takeup.loomPicksFor(25, 4)).isEqualTo(24);
+            assertThat(Takeup.offLoomPicks(24, 0)).isEqualTo(24);
+        }
+
+        @Test
+        void choosesTheWheelForTheLoomSettTheFinishedClothNeeds() {
+            Takeup.OffLoom chosen = Takeup.bestChangeWheelOffLoom(1200, 25, 4, List.of(48, 50, 52));
+            assertThat(chosen.onLoom().teeth()).isEqualTo(50);
+            assertThat(chosen.offLoomPicks()).isEqualTo(25);
+            assertThat(chosen.offLoomError()).isEqualTo(0);
+            assertThat(Takeup.bestChangeWheel(1200, 25, List.of(48, 50, 52)).teeth())
+                    .isEqualTo(48);
+        }
+
+        @Test
+        void readsTheDrawersRangeAsTheClothWillMeasure() {
+            Takeup.SettRange off = Takeup.settRangeOffLoom(1200, List.of(40, 60), 4);
+            assertThat(off.lowest()).isEqualTo(20.833);
+            assertThat(off.highest()).isEqualTo(31.25);
+            assertThat(Takeup.settRange(1200, List.of(40, 60))).isEqualTo(new Takeup.SettRange(20, 30));
+        }
+
+        @Test
+        void keepsAnEmptyDrawerReachingNothing() {
+            Takeup.SettRange none = Takeup.settRangeOffLoom(1200, List.of(), 4);
+            assertThat(none.lowest()).isEqualTo(Double.POSITIVE_INFINITY);
+            assertThat(none.highest()).isEqualTo(Double.NEGATIVE_INFINITY);
+        }
+
+        @Test
+        void refusesAContractionNoClothHas() {
+            assertThatThrownBy(() -> Takeup.offLoomPicks(24, 25)).isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Takeup.loomPicksFor(24, -1)).isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> Takeup.loomPicksFor(0, 3)).isInstanceOf(InvalidArgumentException.class);
+        }
+    }
 }

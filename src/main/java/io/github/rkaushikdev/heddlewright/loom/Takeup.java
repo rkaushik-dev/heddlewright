@@ -4,6 +4,7 @@ import io.github.rkaushikdev.heddlewright.util.Check;
 import io.github.rkaushikdev.heddlewright.util.InvalidArgumentException;
 import io.github.rkaushikdev.heddlewright.util.Json;
 import io.github.rkaushikdev.heddlewright.util.Numeric;
+import java.util.DoubleSummaryStatistics;
 import java.util.List;
 
 /**
@@ -15,11 +16,16 @@ import java.util.List;
  * a single number called the dividend, and the setting is the dividend over the change wheel.
  *
  * <pre>
- *   picks per inch = dividend / change wheel teeth
+ *   picks per inch on the loom = dividend / change wheel teeth
  * </pre>
  *
  * <p>so the arithmetic a weaver actually does is one division, and everything else is worked out
  * once when the loom is set up.
+ *
+ * <p>The wheel sets the picks on the loom, where the cloth is held under tension. Off the loom it
+ * relaxes and shortens, and the picks close up by the same share, so a customer who measures twenty
+ * four picks an inch on the finished cloth is asking the loom for fewer. The contraction is quoted
+ * as a percentage of the length on the loom.
  */
 public final class Takeup {
 
@@ -31,6 +37,9 @@ public final class Takeup {
 
     /** The loosest and closest setts a drawer of wheels can reach. */
     public record SettRange(double lowest, double highest) {}
+
+    /** A wheel chosen for the picks wanted off the loom, and the picks it gives there. */
+    public record OffLoom(BestWheel onLoom, double contractionPercent, double offLoomPicks, double offLoomError) {}
 
     private static final List<Integer> STOCK =
             List.of(24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 56, 60);
@@ -58,7 +67,7 @@ public final class Takeup {
                 ((double) ratchetTeeth * carrierTeeth * rollerWheelTeeth) / (studTeeth * circumference), 4);
     }
 
-    /** The picks per inch a change wheel gives on a known dividend. */
+    /** The picks per inch a change wheel gives on the loom, on a known dividend. */
     public static double picksPerInch(double dividend, double changeWheelTeeth) {
         return picksOn(dividend, changeWheelTeeth);
     }
@@ -128,24 +137,63 @@ public final class Takeup {
                 .toList();
     }
 
-    /** The sett range the stock drawer can reach on a given dividend. */
+    /** The sett range the stock drawer can reach on the loom, on a given dividend. */
     public static SettRange settRange(double dividend) {
         return settRange(dividend, STOCK);
     }
 
     /**
-     * The sett range a drawer of wheels can reach on a given dividend. An empty drawer reaches
+     * The sett range a drawer of wheels can reach on the loom on a given dividend. An empty drawer reaches
      * nothing, and reads as the lowest sett at infinity and the highest at minus infinity.
      */
     public static SettRange settRange(double dividend, List<?> wheels) {
-        List<Setting> card = settingCard(dividend, wheels);
-        double lowest = Double.POSITIVE_INFINITY;
-        double highest = Double.NEGATIVE_INFINITY;
-        for (Setting entry : card) {
-            lowest = Math.min(lowest, entry.picksPerInch());
-            highest = Math.max(highest, entry.picksPerInch());
+        DoubleSummaryStatistics reach = settingCard(dividend, wheels).stream()
+                .mapToDouble(Setting::picksPerInch)
+                .summaryStatistics();
+        return new SettRange(reach.getMin(), reach.getMax());
+    }
+
+    /** The sett range a drawer reaches as the cloth will measure off the loom. */
+    public static SettRange settRangeOffLoom(double dividend, List<?> wheels, double contractionPercent) {
+        SettRange onLoom = settRange(dividend, wheels);
+        return new SettRange(
+                offLoomPicks(onLoom.lowest(), contractionPercent), offLoomPicks(onLoom.highest(), contractionPercent));
+    }
+
+    /** The picks an inch a cloth woven at so many on the loom measures once it has relaxed. */
+    public static double offLoomPicks(double loomPicks, double contractionPercent) {
+        if (Double.isInfinite(loomPicks)) {
+            return loomPicks;
         }
-        return new SettRange(lowest, highest);
+        Check.positiveNumber(loomPicks, "loomPicks");
+        return Numeric.roundTo(loomPicks / kept(contractionPercent), 3);
+    }
+
+    /** The picks an inch to set on the loom for a cloth wanted at so many off it. */
+    public static double loomPicksFor(double offLoomPicks, double contractionPercent) {
+        Check.positiveNumber(offLoomPicks, "offLoomPicks");
+        return Numeric.roundTo(offLoomPicks * kept(contractionPercent), 3);
+    }
+
+    private static double kept(double contractionPercent) {
+        double share = Check.number(contractionPercent, "contractionPercent") / 100;
+        if (share < 0 || share > 0.2) {
+            throw new InvalidArgumentException(
+                    "a cloth does not relax by that much off the loom",
+                    Json.obj("contractionPercent", contractionPercent));
+        }
+        return 1 - share;
+    }
+
+    /**
+     * The best wheel in a drawer for the picks wanted off the loom: the wheel is chosen against the
+     * loom sett the contraction asks for, and what it gives is read back as the cloth will measure.
+     */
+    public static OffLoom bestChangeWheelOffLoom(
+            double dividend, double wantedOffLoomPicks, double contractionPercent, List<?> wheels) {
+        BestWheel onLoom = bestChangeWheel(dividend, loomPicksFor(wantedOffLoomPicks, contractionPercent), wheels);
+        double off = offLoomPicks(onLoom.achieved(), contractionPercent);
+        return new OffLoom(onLoom, contractionPercent, off, Numeric.roundTo(Math.abs(off - wantedOffLoomPicks), 3));
     }
 
     /** Refuse a sett the stock drawer cannot reach within one pick an inch. */
