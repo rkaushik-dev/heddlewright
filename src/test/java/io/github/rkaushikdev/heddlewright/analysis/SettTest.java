@@ -163,4 +163,68 @@ class SettTest {
             assertThatThrownBy(() -> Sett.endsForWidth(20, 0)).isInstanceOf(InvalidArgumentException.class);
         }
     }
+
+    @Nested
+    class BrierleySett {
+
+        @Test
+        void setsPlainWeaveAtHalfTheDiametersAsAshenhurstDoes() {
+            Sett.Brierley plain = Sett.brierleySett(Plain.plainWeave(), 30, Sett.Family.TWILL);
+            assertThat(plain.averageFloat()).isEqualTo(1);
+            assertThat(plain.sett()).isEqualTo(76.68);
+            assertThat(plain.sett())
+                    .isEqualTo(Sett.ashenhurstSett(Plain.plainWeave(), 30).warp());
+        }
+
+        @Test
+        void raisesTheAverageFloatToTheFamilyPower() {
+            assertThat(Sett.brierleySett(Twill.twillWeave("2/2"), 30, Sett.Family.TWILL))
+                    .isEqualTo(new Sett.Brierley(2, 76.68, 102.59));
+            assertThat(Sett.brierleySett(Plain.basketWeave(2), 30, Sett.Family.MATT)
+                            .sett())
+                    .isEqualTo(100.48);
+            assertThat(Sett.brierleySett(Satin.satinWeave(5, 2), 30, Sett.Family.SATIN))
+                    .isEqualTo(new Sett.Brierley(2.5, 76.68, 105.67));
+        }
+
+        @Test
+        void countsTheCrossingAtTheJoinOfTheRepeat() {
+            assertThat(Sett.brierleySett(Twill.twillWeave("1/3"), 30, Sett.Family.TWILL)
+                            .averageFloat())
+                    .isEqualTo(2);
+            assertThat(Sett.brierleySett(Twill.twillWeave("2/1"), 30, Sett.Family.TWILL)
+                            .averageFloat())
+                    .isEqualTo(1.5);
+        }
+
+        @Test
+        void setsALongFloatingSatinCloserThanAshenhurstDoes() {
+            Matrix satin = Satin.satinWeave(8, 3);
+            assertThat(Sett.brierleySett(satin, 30, Sett.Family.SATIN).sett())
+                    .isEqualTo(roundToTwo(76.68 * Math.pow(4, 0.35)));
+            assertThat(Sett.brierleySett(satin, 30, Sett.Family.SATIN).sett())
+                    .isGreaterThan(Sett.ashenhurstSett(satin, 30).warp());
+        }
+
+        @Test
+        void readsAYarnInAnotherSystem() {
+            double tex = 590.5 / 30;
+            assertThat(Sett.brierleySett(Twill.twillWeave("2/2"), tex, "tex", Sett.Family.TWILL)
+                            .sett())
+                    .isCloseTo(102.59, within(0.05));
+        }
+
+        @Test
+        void refusesAWeaveWithNoFamily() {
+            assertThatThrownBy(() -> Sett.brierleySett(Plain.plainWeave(), 30, null))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void leavesTheAshenhurstFiguresAsTheyWere() {
+            Sett.Ashenhurst twill = Sett.ashenhurstSett(Twill.twillWeave("2/2"), 30);
+            assertThat(twill.warp()).isEqualTo(roundToTwo(153.36 * 4 / 6.0));
+            assertThat(Sett.settFactor(Twill.twillWeave("2/2")).warp()).isEqualTo(0.6667);
+        }
+    }
 }
