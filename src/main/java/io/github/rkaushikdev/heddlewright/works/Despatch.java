@@ -17,6 +17,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Despatch.
@@ -24,6 +25,14 @@ import java.util.Set;
  * <p>A note lists pieces, not metres. The metres follow from the pieces, and the moment a note is
  * allowed to carry a length of its own the two stop agreeing and nobody can say which is right. So
  * the length is always derived, and a piece can only be on one open note at a time.
+ *
+ * <p>A contract quantity is never exact. The terms carry a tolerance either way, three per cent being
+ * usual, and say which grades the buyer takes against the order: a second sent with a first quality
+ * order goes on the note but does not fill the order. Inside the tolerance an order is covered short
+ * or long; past it the buyer may refuse the excess.
+ *
+ * <p>The pieces go out in bales. A bale is packed to a length the carrier and the warehouse agree on,
+ * and the packing list says which pieces are in which bale.
  */
 public final class Despatch {
 
@@ -74,8 +83,47 @@ public final class Despatch {
         }
     }
 
-    /** What has gone against an order, and how far short it is. */
-    public record Coverage(double orderedYards, double sentYards, boolean covered, double shortYards) {}
+    /**
+     * What has gone against an order: the yards that count, whether that covers the order inside its
+     * tolerance, how far short or how far past the tolerance it is, and the yards sent in grades the
+     * order does not take.
+     */
+    public record Coverage(
+            double orderedYards,
+            double sentYards,
+            boolean covered,
+            double shortYards,
+            double overYards,
+            double uncountedYards) {}
+
+    /** A contract's delivery terms: the tolerance either way in per cent, and the grades it takes. */
+    public record Terms(double tolerancePercent, Optional<Set<String>> grades) {
+        /** Every grade counts and the quantity is exact. */
+        public static final Terms EXACT = new Terms(0, Optional.empty());
+
+        /** Checks the tolerance and copies the grades. */
+        public Terms {
+            if (!(Check.number(tolerancePercent, "tolerancePercent") >= 0 && tolerancePercent <= 50)) {
+                throw new InvalidArgumentException(
+                        "a delivery tolerance runs from nothing to fifty per cent",
+                        Json.obj("tolerancePercent", tolerancePercent));
+            }
+            grades = grades.map(Set::copyOf);
+        }
+
+        /** The usual terms: three per cent either way, first quality only. */
+        public static Terms usual() {
+            return new Terms(3, Optional.of(Set.of("first")));
+        }
+    }
+
+    /** One bale of a packing list: its number, the pieces in it, and their length. */
+    public record Bale(int number, List<String> pieces, double yards) {
+        /** Copies the pieces. */
+        public Bale {
+            pieces = List.copyOf(pieces);
+        }
+    }
 
     private Despatch() {}
 
@@ -108,12 +156,13 @@ public final class Despatch {
 
     /** The lengths on a note, split by grade, most first. */
     public static List<JsonObject> noteByGrade(Note note) {
+        return yardsBy(note.pieces(), "grade", NotePiece::grade, NotePiece::yards);
+    }
+
+    private static <T> List<JsonObject> yardsBy(
+            List<T> items, String label, Function<T, String> key, Function<T, Double> yards) {
         return Group.tally(
-                note.pieces(),
-                Group.<NotePiece>by(NotePiece::grade)
-                        .label("grade")
-                        .field("yards", NotePiece::yards)
-                        .sortBy("yards"));
+                items, Group.<T>by(key).label(label).field("yards", yards).sortBy("yards"));
     }
 
     /** Refuse a note that sends a piece twice, or one already on another note. */
@@ -136,6 +185,41 @@ public final class Despatch {
             }
         }
         return note;
+    }
+
+    /**
+     * Pack a note into bales of at most {@code maxYards}, longest pieces first, each into the first
+     * bale with room for it. A piece longer than a bale cannot be packed and is refused.
+     */
+    public static List<Bale> packingList(Note note, double maxYards) {
+        Check.positiveNumber(maxYards, "maxYards");
+        List<NotePiece> pieces = new ArrayList<>(note.pieces());
+        pieces.sort(Comparator.comparingDouble(NotePiece::yards).reversed());
+        List<List<NotePiece>> bales = new ArrayList<>();
+        for (NotePiece piece : pieces) {
+            if (piece.yards() > maxYards) {
+                throw new InvalidArgumentException(
+                        piece.reference() + " is longer than a bale holds",
+                        Json.obj("piece", piece.reference(), "yards", piece.yards(), "maxYards", maxYards));
+            }
+            bales.stream()
+                    .filter(bale -> Numeric.sumBy(bale, NotePiece::yards, "bale") + piece.yards() <= maxYards)
+                    .findFirst()
+                    .orElseGet(() -> {
+                        bales.add(new ArrayList<>());
+                        return bales.get(bales.size() - 1);
+                    })
+                    .add(piece);
+        }
+        List<Bale> out = new ArrayList<>(bales.size());
+        for (int index = 0; index < bales.size(); index += 1) {
+            List<NotePiece> bale = bales.get(index);
+            out.add(new Bale(
+                    index + 1,
+                    bale.stream().map(NotePiece::reference).toList(),
+                    Numeric.roundTo(Numeric.sumBy(bale, NotePiece::yards, "bale"), 3)));
+        }
+        return List.copyOf(out);
     }
 
     /** Mark a note sent on a day, which it cannot be twice. */
@@ -181,28 +265,39 @@ public final class Despatch {
     /** What went out to each customer, most first. */
     public static List<JsonObject> byCustomer(List<Note> notes) {
         Check.array(notes, "notes");
-        return Group.tally(
-                notes,
-                Group.<Note>by(Note::customer)
-                        .label("customer")
-                        .field("yards", Note::yards)
-                        .sortBy("yards"));
+        return yardsBy(notes, "customer", Note::customer, Note::yards);
     }
 
-    /** Whether the notes to a customer cover what an order asked for, and by how much they fall short. */
+    /** Whether the notes to a customer cover an order exactly, every grade counting. */
     public static Coverage coversOrder(List<Note> notes, String order, double orderedYards) {
+        return coversOrder(notes, order, orderedYards, Terms.EXACT);
+    }
+
+    /**
+     * Whether the notes to a customer cover what an order asked for on its terms: the yards in the
+     * grades it takes are held against the ordered length less the tolerance, and anything past the
+     * ordered length plus the tolerance is over.
+     */
+    public static Coverage coversOrder(List<Note> notes, String order, double orderedYards, Terms terms) {
         Check.positiveNumber(orderedYards, "orderedYards");
-        List<Note> mine =
-                notes.stream().filter(note -> note.customer().equals(order)).toList();
-        double sentYards = Numeric.roundTo(Numeric.sumBy(mine, Note::yards, "notes"), 3);
-        if (sentYards < 0) {
-            throw new InvalidArgumentException(
-                    "a note cannot send a negative length", Json.obj("sentYards", sentYards));
-        }
+        Check.required(terms, "terms");
+        List<NotePiece> pieces = notes.stream()
+                .filter(note -> note.customer().equals(order))
+                .flatMap(note -> note.pieces().stream())
+                .toList();
+        List<NotePiece> counted = pieces.stream()
+                .filter(piece -> terms.grades()
+                        .map(grades -> grades.contains(piece.grade()))
+                        .orElse(true))
+                .toList();
+        double sentYards = Numeric.roundTo(Numeric.sumBy(counted, NotePiece::yards, "pieces"), 3);
+        double share = terms.tolerancePercent() / 100;
         return new Coverage(
                 orderedYards,
                 sentYards,
-                sentYards >= orderedYards,
-                Numeric.roundTo(Math.max(0, orderedYards - sentYards), 3));
+                sentYards >= orderedYards * (1 - share) - 1e-9,
+                Numeric.roundTo(Math.max(0, orderedYards - sentYards), 3),
+                Numeric.roundTo(Math.max(0, sentYards - orderedYards * (1 + share)), 3),
+                Numeric.roundTo(Numeric.sumBy(pieces, NotePiece::yards, "pieces") - sentYards, 3));
     }
 }

@@ -11,6 +11,7 @@ import io.github.rkaushikdev.heddlewright.util.JsonObject;
 import io.github.rkaushikdev.heddlewright.util.NotFoundException;
 import io.github.rkaushikdev.heddlewright.works.Despatch.Note;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
@@ -167,7 +168,7 @@ class DespatchTest {
         @Test
         void saysAnOrderIsCoveredOnceEnoughHasGone() {
             assertThat(Despatch.coversOrder(List.of(NOTE), "Ravensward", 100))
-                    .isEqualTo(new Despatch.Coverage(100, 100, true, 0));
+                    .isEqualTo(new Despatch.Coverage(100, 100, true, 0, 0, 0));
         }
 
         @Test
@@ -181,6 +182,84 @@ class DespatchTest {
         void countsNothingForACustomerWithNoNotes() {
             assertThat(Despatch.coversOrder(List.of(NOTE), "Nobody", 100).sentYards())
                     .isEqualTo(0);
+        }
+    }
+
+    @Nested
+    class CoversOrderOnTerms {
+
+        private final Note firsts = note(
+                "DN-2",
+                "Ravensward",
+                Json.obj("reference", "P3", "yards", 49),
+                Json.obj("reference", "P4", "yards", 48));
+
+        @Test
+        void takesADeliveryInsideTheToleranceAsCovered() {
+            Despatch.Coverage reading =
+                    Despatch.coversOrder(List.of(firsts), "Ravensward", 100, Despatch.Terms.usual());
+            assertThat(reading.covered()).isTrue();
+            assertThat(reading.shortYards()).isEqualTo(3);
+            assertThat(Despatch.coversOrder(List.of(firsts), "Ravensward", 100).covered())
+                    .isFalse();
+        }
+
+        @Test
+        void leavesSecondsOffAFirstQualityOrder() {
+            Despatch.Coverage reading = Despatch.coversOrder(List.of(NOTE), "Ravensward", 100, Despatch.Terms.usual());
+            assertThat(reading.sentYards()).isEqualTo(60);
+            assertThat(reading.uncountedYards()).isEqualTo(40);
+            assertThat(reading.covered()).isFalse();
+        }
+
+        @Test
+        void measuresWhatGoesPastTheToleranceAsOver() {
+            Despatch.Coverage reading = Despatch.coversOrder(
+                    List.of(NOTE, firsts), "Ravensward", 150, new Despatch.Terms(3, Optional.empty()));
+            assertThat(reading.sentYards()).isEqualTo(197);
+            assertThat(reading.overYards()).isEqualTo(197 - 154.5);
+            assertThat(reading.shortYards()).isEqualTo(0);
+        }
+
+        @Test
+        void refusesAToleranceNoContractCarries() {
+            assertThatThrownBy(() -> new Despatch.Terms(60, Optional.empty()))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> new Despatch.Terms(-1, Optional.empty()))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+    }
+
+    @Nested
+    class PackingList {
+
+        private final Note load = note(
+                "DN-3",
+                "Ravensward",
+                Json.obj("reference", "A", "yards", 60),
+                Json.obj("reference", "B", "yards", 70),
+                Json.obj("reference", "C", "yards", 30),
+                Json.obj("reference", "D", "yards", 40));
+
+        @Test
+        void packsTheLongestPiecesFirstIntoTheFirstBaleWithRoom() {
+            assertThat(Despatch.packingList(load, 100))
+                    .containsExactly(
+                            new Despatch.Bale(1, List.of("B", "C"), 100), new Despatch.Bale(2, List.of("A", "D"), 100));
+        }
+
+        @Test
+        void givesALongPieceABaleOfItsOwnAndPairsTheShortOnes() {
+            assertThat(Despatch.packingList(load, 70))
+                    .extracting(Despatch.Bale::pieces)
+                    .containsExactly(List.of("B"), List.of("A"), List.of("D", "C"));
+        }
+
+        @Test
+        void refusesAPieceLongerThanABale() {
+            assertThatThrownBy(() -> Despatch.packingList(load, 65))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("B is longer");
         }
     }
 }
