@@ -186,6 +186,16 @@ class ClothRoutesTest {
         }
 
         @Test
+        void keepsTheCutsOffTheWholeRunOfABookedReedMark() {
+            book(Json.obj("code", "reed_mark", "yard", 30, "through", 60));
+            Json job = post("/pieces/P1001/cut", Json.obj("lengths", List.of(35, 25)))
+                    .body();
+            assertThat(job.get("runs").at(1).get("from")).isEqualTo(Json.of(60.25));
+            assertThat(job.get("summary").get("cutYards")).isEqualTo(Json.of(60));
+            assertThat(((JsonArray) job.get("unmet")).size()).isEqualTo(0);
+        }
+
+        @Test
         void cutsTheWholePieceWhenNothingIsWrongWithIt() {
             Json job =
                     post("/pieces/P1001/cut", Json.obj("lengths", List.of(100))).body();

@@ -8,6 +8,7 @@ import io.github.rkaushikdev.heddlewright.util.Numeric;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Cutting a roll around its faults.
@@ -16,6 +17,10 @@ import java.util.List;
  * than its length suggests, because a fault in the middle of a length spoils the whole length.
  * Planning the cuts means finding the clear runs first and only then deciding what to take out of
  * them.
+ *
+ * <p>A fault is a point on the roll, or for a fault that runs down the piece a stretch from the
+ * {@code yard} it starts at to the yard it runs {@code through}. The margin is kept either side of the
+ * whole stretch, since a cut anywhere inside a reed mark still lands on the reed mark.
  */
 public final class CutPlan {
 
@@ -69,28 +74,28 @@ public final class CutPlan {
 
     /**
      * The stretches of a roll clear of faults, each with a margin either side of the fault so a cut
-     * never lands on one.
+     * never lands on one. A fault is a yard, or a record with the {@code yard} it starts at and an
+     * optional {@code through}.
      */
     public static List<Span> clearRuns(List<?> defectYards, double rollYards, double clearance) {
         List<Object> faults = Check.array(defectYards, "defectYards");
         Check.positiveNumber(rollYards, "rollYards");
         Check.number(clearance, "clearance", Bounds.atLeast(0));
-        List<Double> points = new ArrayList<>(faults.size());
+        List<Open> blocked = new ArrayList<>(faults.size());
         for (int index = 0; index < faults.size(); index += 1) {
-            points.add(Check.number(faults.get(index), "defectYards[" + index + "]", Bounds.atLeast(0)));
+            Open fault = faultSpan(faults.get(index), "defectYards[" + index + "]");
+            blocked.add(new Open(Math.max(0, fault.from - clearance), Math.min(rollYards, fault.to + clearance)));
         }
-        points.sort(Comparator.naturalOrder());
+        blocked.sort(Comparator.comparingDouble((Open span) -> span.from));
 
         List<Open> merged = new ArrayList<>();
-        for (double at : points) {
-            double from = Math.max(0, at - clearance);
-            double to = Math.min(rollYards, at + clearance);
+        for (Open span : blocked) {
             Open last = merged.isEmpty() ? null : merged.get(merged.size() - 1);
-            if (last != null && from <= last.to) {
-                last.to = Math.max(last.to, to);
+            if (last != null && span.from <= last.to) {
+                last.to = Math.max(last.to, span.to);
                 continue;
             }
-            merged.add(new Open(from, to));
+            merged.add(span);
         }
 
         List<Span> runs = new ArrayList<>();
@@ -105,6 +110,19 @@ public final class CutPlan {
             runs.add(span(Numeric.roundTo(at, 3), Numeric.roundTo(rollYards, 3)));
         }
         return List.copyOf(runs);
+    }
+
+    /** Where a fault lies: a yard on its own, or a running fault from its yard through to its end. */
+    private static Open faultSpan(Object fault, String field) {
+        if (!(fault instanceof JsonObject) && !(fault instanceof Map<?, ?>)) {
+            double at = Check.number(fault, field, Bounds.atLeast(0));
+            return new Open(at, at);
+        }
+        JsonObject record = Check.plainObject(fault, field);
+        double from = Check.number(record.get("yard"), field + ".yard", Bounds.atLeast(0));
+        Json through = record.get("through");
+        double to = through.isNullish() ? from : Check.number(through, field + ".through", Bounds.atLeast(from));
+        return new Open(from, to);
     }
 
     private static Span span(double from, double to) {

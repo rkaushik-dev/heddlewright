@@ -88,7 +88,9 @@ public final class ClothRoutes {
             String reference = call.params().get("reference");
             Json piece = Repository.get(repository, PIECES, reference);
             List<Json> yards = defectsFor(repository, reference).stream()
-                    .map(defect -> defect.get("yard"))
+                    .map(defect -> defect.get("through").isMissing()
+                            ? defect.get("yard")
+                            : Json.obj("yard", defect.get("yard"), "through", defect.get("through")))
                     .toList();
             Json lengths = body.get("lengths");
             return CutPlan.cutRoll(Json.obj(

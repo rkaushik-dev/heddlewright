@@ -52,6 +52,40 @@ class CutPlanTest {
         }
 
         @Test
+        void keepsTheClearanceRoundTheWholeRunOfARunningFault() {
+            assertThat(CutPlan.clearRuns(List.of(Json.obj("yard", 40, "through", 45)), 100))
+                    .containsExactly(new Span(0, 39.75, 39.75), new Span(45.25, 100, 54.75));
+        }
+
+        @Test
+        void readsAFaultRecordWithNoRunAsAPoint() {
+            assertThat(CutPlan.clearRuns(List.of(Json.obj("yard", 50)), 100))
+                    .isEqualTo(CutPlan.clearRuns(List.of(50), 100));
+        }
+
+        @Test
+        void swallowsAPointFaultThatFallsInsideARun() {
+            List<Span> runs = CutPlan.clearRuns(List.of(42, Json.obj("yard", 40, "through", 45), 80), 100);
+            assertThat(runs).extracting(Span::from).containsExactly(0.0, 45.25, 80.25);
+            assertThat(runs).extracting(Span::to).containsExactly(39.75, 79.75, 100.0);
+        }
+
+        @Test
+        void sortsRunningFaultsByWhereTheyStart() {
+            List<Span> runs = CutPlan.clearRuns(
+                    List.of(Json.obj("yard", 70, "through", 72), Json.obj("yard", 10, "through", 30)), 100);
+            assertThat(runs).extracting(Span::yards).containsExactly(9.75, 39.5, 27.75);
+        }
+
+        @Test
+        void refusesARunThatEndsBeforeItStartsOrAFaultWithNoYard() {
+            assertThatThrownBy(() -> CutPlan.clearRuns(List.of(Json.obj("yard", 40, "through", 30)), 100))
+                    .isInstanceOf(InvalidArgumentException.class);
+            assertThatThrownBy(() -> CutPlan.clearRuns(List.of(Json.obj("through", 30)), 100))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
         void refusesAFaultAtANegativePosition() {
             assertThatThrownBy(() -> CutPlan.clearRuns(List.of(-1), 100)).isInstanceOf(InvalidArgumentException.class);
         }
@@ -178,6 +212,20 @@ class CutPlanTest {
             assertThat(clean.summary().yield()).isEqualTo(0.6);
             assertThat(faulty.summary().yield()).isEqualTo(0);
             assertThat(faulty.unmet()).containsExactly(60.0);
+        }
+
+        @Test
+        void losesTheWholeRunOfARunningFaultFromTheOrder() {
+            CutPlan.Job job = CutPlan.cutRoll(Json.obj(
+                    "rollYards",
+                    100,
+                    "defectYards",
+                    List.of(Json.obj("yard", 20, "through", 50)),
+                    "wantedLengths",
+                    List.of(45, 25)));
+            assertThat(job.cuts()).extracting(Span::from).containsExactly(50.25);
+            assertThat(job.unmet()).containsExactly(25.0);
+            assertThat(job.summary().wasteYards()).isEqualTo(30.5);
         }
     }
 }
