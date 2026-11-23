@@ -38,7 +38,7 @@ class EfficiencyTest {
         @Test
         void fillsInTheCountsARecordLeavesOut() {
             assertThat(Efficiency.normaliseStop(Json.obj("cause", "mechanical")))
-                    .isEqualTo(new Efficiency.Stop("mechanical", 1, 0, 0, 0));
+                    .isEqualTo(new Efficiency.Stop("mechanical", 1, 0, 0, 0, Efficiency.StopClass.MECHANICAL));
         }
 
         @Test
@@ -195,6 +195,86 @@ class EfficiencyTest {
             assertThat(Efficiency.shiftReport(480, SHIFT, OptionalDouble.empty())
                             .picksWoven())
                     .isEmpty();
+        }
+    }
+
+    @Nested
+    class StopClasses {
+
+        @Test
+        void classesEveryCauseTheBookKnows() {
+            assertThat(Efficiency.classOf("warp break")).isEqualTo(Efficiency.StopClass.WARP);
+            assertThat(Efficiency.classOf("shuttle change")).isEqualTo(Efficiency.StopClass.WEFT);
+            assertThat(Efficiency.classOf("beam change")).isEqualTo(Efficiency.StopClass.ORGANISATION);
+            assertThat(Efficiency.STOP_CAUSES)
+                    .allMatch(cause -> Efficiency.classOf(cause) != Efficiency.StopClass.OTHER);
+        }
+
+        @Test
+        void booksACauseItDoesNotKnowAsOther() {
+            assertThat(Efficiency.classOf("lightning")).isEqualTo(Efficiency.StopClass.OTHER);
+            assertThat(Efficiency.normaliseStop(Json.obj("cause", "lightning")).stopClass())
+                    .isEqualTo(Efficiency.StopClass.OTHER);
+            assertThatThrownBy(() -> Efficiency.classOf("")).isInstanceOf(InvalidArgumentException.class);
+        }
+
+        @Test
+        void addsTheLossesUpByClassWorstFirst() {
+            List<JsonObject> ranked = Efficiency.lossByClass(List.of(
+                    Json.obj("cause", "weft break", "count", 10, "minutesEach", 1),
+                    Json.obj("cause", "shuttle change", "count", 4, "minutesEach", 2),
+                    Json.obj("cause", "mechanical", "count", 1, "minutesEach", 15)));
+            assertThat(ranked)
+                    .extracting(row -> row.get("class"))
+                    .containsExactly(Json.of("weft"), Json.of("mechanical"));
+            assertThat(ranked.get(0).get("minutesLost")).isEqualTo(Json.of(18));
+            assertThat(ranked.get(0).get("count")).isEqualTo(Json.of(14));
+        }
+
+        @Test
+        void putsTheClassesInTheShiftReport() {
+            Efficiency.ShiftReport report = Efficiency.shiftReport(480, SHIFT, OptionalDouble.empty());
+            assertThat(report.byClass())
+                    .extracting(row -> row.get("class"))
+                    .containsExactly(Json.of("organisation"), Json.of("warp"), Json.of("weft"));
+        }
+
+        @Test
+        void splitsTheLostMinutesTheSameWayItAlwaysHas() {
+            Efficiency.Lost lost = Efficiency.lostMinutes(SHIFT);
+            assertThat(lost.mending()).isEqualTo(12 * 1.5 + 20 * 0.5 + 25);
+            assertThat(lost.waiting()).isEqualTo(12 * 0.5 + 20 * 0.2 + 5);
+            assertThat(lost.total()).isEqualTo(lost.mending() + lost.waiting());
+        }
+    }
+
+    @Nested
+    class AgainstCounter {
+
+        @Test
+        void findsTheMinutesTheStopBookDoesNotAccountFor() {
+            Efficiency.Counter counter = Efficiency.againstCounter(480, SHIFT, 480 * 200 * 0.8, 200);
+            double book = Efficiency.efficiency(480, SHIFT);
+            assertThat(counter.counterEfficiency()).isEqualTo(0.8);
+            assertThat(counter.bookEfficiency()).isEqualTo(book);
+            assertThat(counter.unbookedMinutes()).isCloseTo((book - 0.8) * 480, within(0.01));
+            assertThat(counter.unbookedMinutes()).isGreaterThan(0);
+        }
+
+        @Test
+        void readsABookThatClaimsTooMuchAsNegative() {
+            Efficiency.Counter counter = Efficiency.againstCounter(480, SHIFT, 480 * 200, 200);
+            assertThat(counter.counterEfficiency()).isEqualTo(1);
+            assertThat(counter.unbookedMinutes()).isLessThan(0);
+        }
+
+        @Test
+        void refusesACounterThatRanFasterThanTheLoom() {
+            assertThatThrownBy(() -> Efficiency.againstCounter(480, SHIFT, 480 * 200 + 1, 200))
+                    .isInstanceOf(InvalidArgumentException.class)
+                    .hasMessageContaining("more picks");
+            assertThatThrownBy(() -> Efficiency.againstCounter(480, SHIFT, -1, 200))
+                    .isInstanceOf(InvalidArgumentException.class);
         }
     }
 }
