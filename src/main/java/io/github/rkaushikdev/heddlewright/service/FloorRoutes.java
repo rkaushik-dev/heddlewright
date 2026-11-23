@@ -68,7 +68,8 @@ public final class FloorRoutes {
                     "pattern", body.get("pattern"),
                     "boxes", loom.shuttleBoxes(),
                     "boxedAt", loom.boxedAt(),
-                    "picksMinute", loom.picksMinute()));
+                    "picksMinute", loom.picksMinute(),
+                    "allot", body.get("allot").isNullish() ? Json.NULL : body.get("allot")));
         });
 
         Router.route(router, "GET", "/orders", call -> {

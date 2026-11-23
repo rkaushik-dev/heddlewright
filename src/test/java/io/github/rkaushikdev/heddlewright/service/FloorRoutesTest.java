@@ -227,6 +227,17 @@ class FloorRoutesTest {
         }
 
         @Test
+        void allotsTheLoomsBoxesForTravelWhenTheBodyAsks() {
+            Response response = post(
+                    "/looms/N1/boxes",
+                    Json.obj(
+                            "pattern", List.of("ground", "ground", "blue", "blue", "gold", "gold"), "allot", "travel"));
+            assertThat(response.status()).isEqualTo(200);
+            assertThat(response.body().get("allot")).isEqualTo(Json.of("travel"));
+            assertThat(response.body().get("travel")).isEqualTo(Json.of(4));
+        }
+
+        @Test
         void gaitsAWeftOrderUpOnTheLoomThatIsRegistered() {
             Response response = boxes("N1", "ground", "ground", "blue", "blue");
             assertThat(response.status()).isEqualTo(200);

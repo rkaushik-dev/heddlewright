@@ -170,6 +170,22 @@ class CommandsTest {
     class TheSettCommand {
 
         @Test
+        void putsBrierleysSettBesideAshenhurstsWhenAFamilyIsNamed() {
+            String text = run("sett", "--count", "30", "--notation", "2/2", "--family", "twill");
+            assertThat(text).containsPattern("brierley\\s*:\\s*102\\.59");
+            assertThat(text).containsPattern("averageFloat\\s*:\\s*2");
+            assertThat(run("sett", "--count", "30")).doesNotContain("brierley");
+        }
+
+        @Test
+        void setsANamedCatalogueWeaveRatherThanATwill() {
+            String satin = run("sett", "--count", "30", "--weave", "satin 5", "--family", "satin");
+            assertThat(satin).containsPattern("brierley\\s*:\\s*105\\.67");
+            assertThatThrownBy(() -> run("sett", "--count", "30", "--family", "crepe"))
+                    .hasMessageContaining("family must be one of");
+        }
+
+        @Test
         void worksTheSettAndTheTwillAngleOut() {
             String text = run("sett", "--count", "30", "--notation", "2/2");
             assertThat(text).contains("warp");
@@ -330,6 +346,17 @@ class CommandsTest {
 
     @Nested
     class TheBoxesCommand {
+
+        @Test
+        void allotsForTheShortestTravelWhenAsked() {
+            String order = "red red red red red red gold green gold green gold gold red red blue blue blue red";
+            String byCount = run("boxes", "--pattern", order, "--boxes", "4");
+            String byTravel = run("boxes", "--pattern", order, "--boxes", "4", "--allot", "travel");
+            assertThat(byCount).containsPattern("travel\\s*:\\s*14").contains("2:gold");
+            assertThat(byTravel).containsPattern("travel\\s*:\\s*10").contains("2:blue");
+            assertThatThrownBy(() -> run("boxes", "--pattern", order, "--allot", "nearest"))
+                    .hasMessageContaining("allot must be one of");
+        }
 
         @Test
         void gaitsAWeftOrderUpAndPrintsTheChainToLace() {

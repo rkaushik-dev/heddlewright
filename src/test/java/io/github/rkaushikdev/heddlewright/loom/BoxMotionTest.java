@@ -332,6 +332,25 @@ class BoxMotionTest {
     @Nested
     class Travel {
 
+        @Test
+        void plansForTravelWhenTheRequestAsks() {
+            List<String> order = List.of(
+                    "red", "red", "red", "red", "red", "red", "gold", "green", "gold", "green", "gold", "gold", "red",
+                    "red", "blue", "blue", "blue", "red");
+            BoxPlan byCount = BoxPlan.boxMotionPlan(Json.obj("pattern", order, "boxes", 4));
+            BoxPlan byTravel = BoxPlan.boxMotionPlan(Json.obj("pattern", order, "boxes", 4, "allot", "travel"));
+            assertThat(byCount.allot()).isEqualTo(BoxPlan.Allot.COUNT);
+            assertThat(byCount.travel()).isEqualTo(14);
+            assertThat(byTravel.travel()).isEqualTo(10);
+            assertThat(byTravel.allotment().get(1).colour()).isEqualTo("blue");
+            assertThat(BoxPlan.boxMotionPlan(
+                                    order, 4, Boxing.BOTH, java.util.OptionalDouble.of(200), BoxPlan.Allot.TRAVEL)
+                            .picksMinute())
+                    .isPresent();
+            assertThatThrownBy(() -> BoxPlan.boxMotionPlan(Json.obj("pattern", order, "boxes", 4, "allot", "x")))
+                    .isInstanceOf(InvalidArgumentException.class);
+        }
+
         private final List<String> stripes = List.of(
                 "red", "red", "red", "red", "red", "red", "gold", "green", "gold", "green", "gold", "gold", "red",
                 "red", "blue", "blue", "blue", "red");

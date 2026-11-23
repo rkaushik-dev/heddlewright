@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /** The commands that answer about weaves, yarns and card decks rather than about one drawn draft. */
 public final class Shop {
@@ -62,20 +63,35 @@ public final class Shop {
                 "work out the sett a cloth and a yarn will take",
                 Draw.options(
                         "notation", Option.of(Type.STRING, "2/2"),
+                        "weave", Option.of(Type.STRING),
+                        "family", Option.of(Type.STRING),
                         "count", Option.required(Type.NUMBER),
                         "system", Option.of(Type.STRING, "ne"),
                         "picksPerInch", Option.of(Type.NUMBER, 24),
                         "endsPerInch", Option.of(Type.NUMBER, 24)),
                 parsed -> {
                     JsonObject options = Parse.checkOptions(parsed, Registry.specOf("sett"));
-                    Sett.Ashenhurst sett = Sett.ashenhurstSett(
-                            Twill.twillWeave(Text.string(options.get("notation"))),
-                            options.get("count").asDouble(),
-                            Text.string(options.get("system")));
-                    double angle = Twill.twillAngle(
-                            options.get("endsPerInch").asDouble(),
-                            options.get("picksPerInch").asDouble());
-                    return Table.renderPairs(((JsonObject) Json.of(sett)).with("twillAngle", angle));
+                    // A catalogue weave, when one is named, takes the place of the twill notation, and
+                    // a weave family brings Brierley's figure in beside Ashenhurst's.
+                    Json named = options.get("weave");
+                    Matrix cloth = named.isNullish()
+                            ? Twill.twillWeave(Text.string(options.get("notation")))
+                            : Catalogue.weaveByName(Text.string(named));
+                    double count = options.get("count").asDouble();
+                    String system = Text.string(options.get("system"));
+                    JsonObject rows = ((JsonObject) Json.of(Sett.ashenhurstSett(cloth, count, system)))
+                            .with(
+                                    "twillAngle",
+                                    Twill.twillAngle(
+                                            options.get("endsPerInch").asDouble(),
+                                            options.get("picksPerInch").asDouble()));
+                    Json family = options.get("family");
+                    if (family.isNullish()) {
+                        return Table.renderPairs(rows);
+                    }
+                    Sett.Brierley brierley = Sett.brierleySett(cloth, count, system, Sett.Family.parse(family));
+                    return Table.renderPairs(
+                            rows.with("averageFloat", brierley.averageFloat(), "brierley", brierley.sett()));
                 });
 
         Registry.define(
@@ -156,7 +172,8 @@ public final class Shop {
                         "pattern", Option.required(Type.STRING),
                         "boxes", Option.of(Type.INTEGER, 4),
                         "boxedAt", Option.of(Type.STRING, "both"),
-                        "picksMinute", Option.of(Type.NUMBER, 180)),
+                        "picksMinute", Option.of(Type.NUMBER, 180),
+                        "allot", Option.of(Type.STRING, "count")),
                 parsed -> {
                     JsonObject options = Parse.checkOptions(parsed, Registry.specOf("boxes"));
                     // The pattern comes in as one argument so that a weaver can paste the order off a
@@ -169,19 +186,25 @@ public final class Shop {
                             "pattern", pattern,
                             "boxes", options.get("boxes"),
                             "boxedAt", options.get("boxedAt"),
-                            "picksMinute", options.get("picksMinute")));
-                    String allotment = plan.allotment().stream()
-                            .map(entry -> entry.box() + ":" + entry.colour())
-                            .collect(Collectors.joining("  "));
+                            "picksMinute", options.get("picksMinute"),
+                            "allot", options.get("allot")));
                     return Table.renderPairs(Json.obj(
                             "picks", plan.picks(),
                             "colours", plan.colours(),
-                            "boxes", allotment,
-                            "chain", plan.chain().stream().map(String::valueOf).collect(Collectors.joining(" ")),
+                            "boxes",
+                                    joined(
+                                            plan.allotment().stream().map(entry -> entry.box() + ":" + entry.colour()),
+                                            "  "),
+                            "chain", joined(plan.chain().stream().map(String::valueOf), " "),
                             "changes", plan.changes(),
                             "longestLift", plan.longestLift(),
+                            "travel", plan.travel(),
                             "picksLost", plan.picksLost(),
                             "picksMinute", plan.picksMinute()));
                 });
+    }
+
+    private static String joined(Stream<String> parts, String gap) {
+        return parts.collect(Collectors.joining(gap));
     }
 }

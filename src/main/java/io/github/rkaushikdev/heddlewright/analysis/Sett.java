@@ -5,6 +5,7 @@ import io.github.rkaushikdev.heddlewright.util.Matrix;
 import io.github.rkaushikdev.heddlewright.util.Numeric;
 import io.github.rkaushikdev.heddlewright.yarn.Count;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Sett: how many threads to the inch a cloth can carry.
@@ -47,6 +48,16 @@ public final class Sett {
         /** The power the average float is raised to. */
         public double exponent() {
             return exponent;
+        }
+
+        /** Read a family by the word a designer writes, refusing anything else. */
+        public static Family parse(Object text) {
+            return Check.member(text, "family", values());
+        }
+
+        @Override
+        public String toString() {
+            return name().toLowerCase(Locale.ROOT);
         }
     }
 
