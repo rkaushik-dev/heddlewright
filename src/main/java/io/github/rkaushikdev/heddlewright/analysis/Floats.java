@@ -9,6 +9,7 @@ import io.github.rkaushikdev.heddlewright.util.Runs;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.TreeMap;
 
@@ -19,6 +20,10 @@ import java.util.TreeMap;
  * across one pick. Both are measured round the repeat, because the cloth does not stop at the edge
  * of the diagram, and both are what decide whether a cloth will snag, how it will drape and how
  * closely it can be set.
+ *
+ * <p>The drawdown is the face of the cloth. The back is its complement: an end that is lowered on the
+ * face lies on the back, so the long weft floats of a warp satin are the warp floats of its back. A
+ * cloth seen from both sides, or one whose back rubs against a lining, is read from the side asked.
  */
 public final class Floats {
 
@@ -53,74 +58,109 @@ public final class Floats {
         }
     }
 
+    /** Which side of the cloth is read. */
+    public enum Side {
+        /** The face, which is the drawdown as drawn. */
+        FACE,
+        /** The back, where every lowered cell is a raised one. */
+        BACK
+    }
+
+    /** One run of floating cells along a thread, 0-based. */
+    private record Run(int thread, int start, int length, boolean wraps) {}
+
     private Floats() {}
 
-    /** Every warp float in the repeat. */
+    /** The runs of {@code floating} along each thread, measured round the repeat. */
+    private static List<Run> runs(List<List<Integer>> threads, int floating) {
+        List<Run> out = new ArrayList<>();
+        for (int thread = 0; thread < threads.size(); thread += 1) {
+            for (Runs.Run<Integer> run : Runs.cyclicRuns(threads.get(thread))) {
+                if (run.value() == floating) {
+                    out.add(new Run(thread, run.start(), run.length(), run.wraps()));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** The cell value a warp float is made of on a side; a weft float is made of the other. */
+    private static int raised(Side side) {
+        return side == Side.FACE ? 1 : 0;
+    }
+
+    /** Every warp float on the face of the repeat. */
     public static List<WarpFloat> warpFloats(Matrix drawdown) {
-        List<WarpFloat> out = new ArrayList<>();
-        List<List<Integer>> columns = drawdown.columns();
-        for (int e = 0; e < columns.size(); e += 1) {
-            for (Runs.Run<Integer> run : Runs.cyclicRuns(columns.get(e))) {
-                if (run.value() == 1) {
-                    out.add(new WarpFloat(e + 1, run.start() + 1, run.length(), run.wraps()));
-                }
-            }
-        }
-        return List.copyOf(out);
+        return warpFloats(drawdown, Side.FACE);
     }
 
-    /** Every weft float in the repeat. */
+    /** Every warp float on the side of the repeat given. */
+    public static List<WarpFloat> warpFloats(Matrix drawdown, Side side) {
+        return runs(drawdown.columns(), raised(side)).stream()
+                .map(run -> new WarpFloat(run.thread() + 1, run.start() + 1, run.length(), run.wraps()))
+                .toList();
+    }
+
+    /** Every weft float on the face of the repeat. */
     public static List<WeftFloat> weftFloats(Matrix drawdown) {
-        List<WeftFloat> out = new ArrayList<>();
-        for (int p = 0; p < drawdown.rows(); p += 1) {
-            for (Runs.Run<Integer> run : Runs.cyclicRuns(drawdown.row(p))) {
-                if (run.value() == 0) {
-                    out.add(new WeftFloat(p + 1, run.start() + 1, run.length(), run.wraps()));
-                }
-            }
-        }
-        return List.copyOf(out);
+        return weftFloats(drawdown, Side.FACE);
     }
 
-    /** The longest float either way, and which thread carries it. */
+    /** Every weft float on the side of the repeat given. */
+    public static List<WeftFloat> weftFloats(Matrix drawdown, Side side) {
+        return runs(drawdown.allRows(), 1 - raised(side)).stream()
+                .map(run -> new WeftFloat(run.thread() + 1, run.start() + 1, run.length(), run.wraps()))
+                .toList();
+    }
+
+    /** The longest float either way on the face, and which thread carries it. */
     public static Longest longestFloat(Matrix drawdown) {
-        WarpFloat warp = null;
-        for (WarpFloat found : warpFloats(drawdown)) {
-            if (warp == null || found.length() > warp.length()) {
-                warp = found;
-            }
-        }
-        WeftFloat weft = null;
-        for (WeftFloat found : weftFloats(drawdown)) {
-            if (weft == null || found.length() > weft.length()) {
-                weft = found;
-            }
-        }
-        int warpLength = warp == null ? 0 : warp.length();
-        int weftLength = weft == null ? 0 : weft.length();
+        return longestFloat(drawdown, Side.FACE);
+    }
+
+    /** The longest float either way on the side given, the first thread to carry it if tied. */
+    public static Longest longestFloat(Matrix drawdown, Side side) {
+        Optional<WarpFloat> warp = warpFloats(drawdown, side).stream()
+                .reduce((best, found) -> found.length() > best.length() ? found : best);
+        Optional<WeftFloat> weft = weftFloats(drawdown, side).stream()
+                .reduce((best, found) -> found.length() > best.length() ? found : best);
+        int warpLength = warp.map(WarpFloat::length).orElse(0);
+        int weftLength = weft.map(WeftFloat::length).orElse(0);
         return new Longest(
                 warpLength,
                 weftLength,
                 Math.max(warpLength, weftLength),
-                warp == null ? OptionalInt.empty() : OptionalInt.of(warp.end()),
-                weft == null ? OptionalInt.empty() : OptionalInt.of(weft.pick()));
+                warp.map(found -> OptionalInt.of(found.end())).orElse(OptionalInt.empty()),
+                weft.map(found -> OptionalInt.of(found.pick())).orElse(OptionalInt.empty()));
     }
 
-    /** Floats longer than the limit, both ways, ready to print in a report. */
+    /** Floats on the face longer than the limit, both ways, ready to print in a report. */
     public static List<Over> floatsOver(Matrix drawdown, int limit) {
+        return floatsOver(drawdown, limit, Side.FACE);
+    }
+
+    /** Floats on the side given longer than the limit, warp first, ready to print in a report. */
+    public static List<Over> floatsOver(Matrix drawdown, int limit, Side side) {
         Check.positiveInteger(limit, "limit");
         List<Over> out = new ArrayList<>();
-        for (WarpFloat found : warpFloats(drawdown)) {
-            if (found.length() > limit) {
-                out.add(new Over("warp", found.end(), found.start(), found.length(), found.wraps()));
-            }
-        }
-        for (WeftFloat found : weftFloats(drawdown)) {
-            if (found.length() > limit) {
-                out.add(new Over("weft", found.pick(), found.start(), found.length(), found.wraps()));
-            }
-        }
+        warpFloats(drawdown, side).stream()
+                .filter(found -> found.length() > limit)
+                .forEach(found -> out.add(new Over("warp", found.end(), found.start(), found.length(), found.wraps())));
+        weftFloats(drawdown, side).stream()
+                .filter(found -> found.length() > limit)
+                .forEach(
+                        found -> out.add(new Over("weft", found.pick(), found.start(), found.length(), found.wraps())));
         return List.copyOf(out);
+    }
+
+    /**
+     * The longer float of the two sides, which is the one that snags whichever way the cloth is
+     * made up.
+     */
+    public static int longestEitherSide(Matrix drawdown) {
+        return Math.max(
+                longestFloat(drawdown, Side.FACE).longest(),
+                longestFloat(drawdown, Side.BACK).longest());
     }
 
     /** A count of floats by length, for each direction. */

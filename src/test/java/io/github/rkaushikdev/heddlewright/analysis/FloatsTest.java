@@ -213,4 +213,60 @@ class FloatsTest {
             assertThatThrownBy(() -> Floats.floatOnEnd(cloth, 0)).isInstanceOf(InvalidArgumentException.class);
         }
     }
+
+    @Nested
+    class TheBack {
+
+        @Test
+        void readsTheWeftFloatsOfTheFaceAsWarpFloatsOnTheBack() {
+            Matrix twill = Twill.twillWeave("1/3");
+            assertThat(Floats.warpFloats(twill, Floats.Side.BACK)).hasSize(4).allMatch(found -> found.length() == 3);
+            assertThat(Floats.weftFloats(twill, Floats.Side.BACK)).hasSize(4).allMatch(found -> found.length() == 1);
+        }
+
+        @Test
+        void putsTheLongFloatOnTheOtherDirectionOfTheBack() {
+            Floats.Longest face = Floats.longestFloat(Twill.twillWeave("1/3"));
+            Floats.Longest back = Floats.longestFloat(Twill.twillWeave("1/3"), Floats.Side.BACK);
+            assertThat(face.weft()).isEqualTo(3);
+            assertThat(face.warp()).isEqualTo(1);
+            assertThat(back.warp()).isEqualTo(3);
+            assertThat(back.weft()).isEqualTo(1);
+            assertThat(back.onEnd()).hasValue(1);
+        }
+
+        @Test
+        void seesABalancedTwillTheSameFromEitherSide() {
+            Matrix twill = Twill.twillWeave("2/2");
+            assertThat(Floats.longestFloat(twill, Floats.Side.BACK)).isEqualTo(Floats.longestFloat(twill));
+            assertThat(Floats.floatsOver(twill, 1, Floats.Side.BACK)).hasSize(8);
+        }
+
+        @Test
+        void findsTheWholeEndFloatingOnTheBackWhenItIsNeverRaised() {
+            Matrix cloth = Matrix.parse(".X\n.X\n.X");
+            assertThat(Floats.warpFloats(cloth))
+                    .extracting(Floats.WarpFloat::end)
+                    .containsExactly(2);
+            assertThat(Floats.warpFloats(cloth, Floats.Side.BACK))
+                    .containsExactly(new Floats.WarpFloat(1, 1, 3, false));
+        }
+
+        @Test
+        void reportsTheBackFloatsPastALimitWarpFirst() {
+            Matrix satin = Satin.satinWeave(5, 2);
+            List<Floats.Over> back = Floats.floatsOver(satin, 2, Floats.Side.BACK);
+            List<Floats.Over> face = Floats.floatsOver(satin, 2);
+            assertThat(back).hasSize(5).allMatch(found -> found.length() == 4);
+            assertThat(face).hasSize(5);
+            assertThat(back.get(0).direction()).isNotEqualTo(face.get(0).direction());
+        }
+
+        @Test
+        void takesTheWorseSideForASatinAndTheSameForATwillThatBalances() {
+            assertThat(Floats.longestEitherSide(Twill.twillWeave("1/3"))).isEqualTo(3);
+            assertThat(Floats.longestEitherSide(Twill.twillWeave("2/2"))).isEqualTo(2);
+            assertThat(Floats.longestEitherSide(Satin.satinWeave(5, 2))).isEqualTo(4);
+        }
+    }
 }
